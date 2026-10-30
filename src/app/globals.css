@@ -1,30 +1,102 @@
 @import "tailwindcss";
 
 :root {
-  --background: #f8fafc;
-  --foreground: #0f172a;
-  --brand: #6366f1;
+  --background: #faf8ff;
+  --foreground: #131b2e;
 }
 
+/* Design de Vigie SaaS (maquette fournie) : fond clair, indigo, voyants vert / orange / rouge. */
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --color-brand-50: #eef2ff;
-  --color-brand-100: #e0e7ff;
-  --color-brand-200: #c7d2fe;
-  --color-brand-300: #a5b4fc;
-  --color-brand-400: #818cf8;
-  --color-brand-500: #6366f1;
-  --color-brand-600: #4f46e5;
-  --color-brand-700: #4338ca;
-  --color-brand-800: #3730a3;
-  --color-brand-900: #312e81;
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+
+  --color-surface: #faf8ff;
+  --color-surface-subtle: #f8fafc;
+  --color-surface-container-lowest: #ffffff;
+  --color-surface-container-low: #f2f3ff;
+  --color-surface-container: #eaedff;
+  --color-surface-container-high: #e2e7ff;
+  --color-surface-container-highest: #dae2fd;
+  --color-on-surface: #131b2e;
+  --color-on-surface-variant: #464555;
+  --color-text-muted: #64748b;
+  --color-border-muted: #e2e8f0;
+
+  --color-primary: #3525cd;
+  --color-primary-container: #4f46e5;
+  --color-on-primary: #ffffff;
+  --color-on-primary-container: #dad7ff;
+  --color-primary-fixed: #e2dfff;
+  --color-primary-fixed-dim: #c3c0ff;
+  --color-secondary: #006c49;
+  --color-on-secondary: #ffffff;
+  --color-secondary-container: #6cf8bb;
+  --color-secondary-fixed: #6ffbbe;
+  --color-secondary-fixed-dim: #4edea3;
+  --color-on-secondary-fixed: #002113;
+  --color-tertiary: #3130c0;
+  --color-tertiary-container: #4b4dd8;
+  --color-tertiary-fixed: #e1e0ff;
+  --color-on-tertiary: #ffffff;
+  --color-error: #ba1a1a;
+
+  --color-status-up: #10b981;
+  --color-status-down: #ef4444;
+  --color-status-degraded: #f59e0b;
+
+  --font-sans: var(--font-inter), system-ui, sans-serif;
+  --font-head: var(--font-jakarta), var(--font-inter), system-ui, sans-serif;
+
+  --text-headline-xl: 3rem;
+  --text-headline-xl--line-height: 3.5rem;
+  --text-headline-lg: 2.25rem;
+  --text-headline-lg--line-height: 2.75rem;
+  --text-headline-md: 1.5rem;
+  --text-headline-md--line-height: 2rem;
+  --text-headline-sm: 1.25rem;
+  --text-headline-sm--line-height: 1.75rem;
+  --text-body-lg: 1.125rem;
+  --text-body-lg--line-height: 1.75rem;
+  --text-body-md: 0.9375rem;
+  --text-body-md--line-height: 1.5rem;
+  --text-body-sm: 0.8125rem;
+  --text-body-sm--line-height: 1.25rem;
+  --text-label-lg: 0.875rem;
+  --text-label-lg--line-height: 1.25rem;
+  --text-label-md: 0.75rem;
+  --text-label-md--line-height: 1rem;
+  --text-label-sm: 0.6875rem;
+  --text-label-sm--line-height: 0.875rem;
+}
+
+html {
+  scroll-behavior: smooth;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
+  font-family: var(--font-inter), system-ui, Arial, sans-serif;
+}
+
+::selection {
+  background: rgb(79 70 229 / 0.2);
+}
+
+@layer components {
+  .card {
+    @apply rounded-xl bg-surface-container-lowest shadow-sm;
+  }
+  .input {
+    @apply w-full rounded-lg border border-border-muted bg-surface-container-lowest px-4 py-3 text-body-md text-on-surface outline-none transition placeholder:text-text-muted focus:border-primary-container focus:ring-4 focus:ring-primary-container/15;
+  }
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg bg-primary-container px-6 py-2.5 text-label-lg font-semibold text-on-primary shadow-sm transition hover:bg-primary active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60;
+  }
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg bg-surface-container-lowest px-6 py-2.5 text-label-lg font-semibold text-on-surface shadow-sm transition hover:bg-surface-subtle active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60;
+  }
+  .eyebrow {
+    @apply text-label-sm font-bold uppercase tracking-widest text-primary;
+  }
 }

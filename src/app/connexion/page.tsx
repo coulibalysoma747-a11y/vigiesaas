@@ -2,7 +2,14 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { signInWithEmailAndPassword, createUserWithEmailAndPassword } from "firebase/auth";
+import { Icon } from "@/components/Icon";
 import { auth } from "@/lib/firebase";
+
+const PERKS = [
+  "Vérification de ton site toutes les 5 minutes",
+  "Un e-mail dès qu'il tombe, un autre dès qu'il revient",
+  "Gratuit, sans carte bancaire",
+];
 
 export default function LoginPage() {
   const router = useRouter();
@@ -28,23 +35,45 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="mx-auto max-w-md px-6 py-12">
-      <div className="rounded-2xl border border-slate-200 bg-white p-8 shadow-sm">
-        <h1 className="text-2xl font-extrabold">{mode === "login" ? "Connexion" : "Créer un compte"}</h1>
-        <p className="mt-1 text-sm text-slate-500">
-          {mode === "login" ? "Accède à ton tableau de bord Vigie." : "Inscription gratuite en 30 secondes."}
-        </p>
-        <form onSubmit={submit} className="mt-6 space-y-4">
-          <input className="w-full rounded-xl border border-slate-300 px-4 py-2.5 outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20" type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} required />
-          <input className="w-full rounded-xl border border-slate-300 px-4 py-2.5 outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20" type="password" placeholder="Mot de passe" value={password} onChange={(e) => setPassword(e.target.value)} required />
-          {error && <p className="text-sm text-red-600">{error}</p>}
-          <button className="w-full rounded-xl bg-brand-600 py-2.5 font-semibold text-white hover:bg-brand-700 disabled:opacity-50" disabled={loading}>
-            {loading ? "..." : mode === "login" ? "Se connecter" : "Créer le compte"}
+    <div className="relative isolate overflow-hidden">
+      <div className="pointer-events-none absolute left-1/2 top-0 -z-10 h-[360px] w-[760px] max-w-full -translate-x-1/2 rounded-full bg-primary/5 blur-3xl" />
+      <div className="mx-auto grid max-w-5xl items-center gap-12 px-4 py-12 sm:px-8 sm:py-20 md:grid-cols-[1fr_26rem]">
+        <div className="hidden md:block">
+          <span className="eyebrow">Vigie SaaS</span>
+          <h2 className="mt-2 font-head text-headline-lg font-bold tracking-tight text-on-surface">Garde un œil sur ton SaaS, sans y penser.</h2>
+          <ul className="mt-8 space-y-4">
+            {PERKS.map((p) => (
+              <li key={p} className="flex items-start gap-3 text-on-surface-variant">
+                <Icon name="check-circle" size={20} className="mt-0.5 shrink-0 text-status-up" />
+                {p}
+              </li>
+            ))}
+          </ul>
+        </div>
+
+        <div className="card p-7 shadow-xl sm:p-8">
+          <h1 className="font-head text-headline-md font-bold tracking-tight text-on-surface">{mode === "login" ? "Connexion" : "Créer un compte"}</h1>
+          <p className="mt-1.5 text-body-sm text-text-muted">
+            {mode === "login" ? "Accède à ton tableau de bord Vigie." : "Inscription gratuite en 30 secondes."}
+          </p>
+          <form onSubmit={submit} className="mt-6 space-y-4">
+            <div>
+              <label htmlFor="email" className="mb-1.5 block text-label-md font-semibold text-on-surface-variant">Adresse e-mail</label>
+              <input id="email" className="input" type="email" autoComplete="email" placeholder="toi@exemple.com" value={email} onChange={(e) => setEmail(e.target.value)} required />
+            </div>
+            <div>
+              <label htmlFor="password" className="mb-1.5 block text-label-md font-semibold text-on-surface-variant">Mot de passe</label>
+              <input id="password" className="input" type="password" autoComplete={mode === "login" ? "current-password" : "new-password"} placeholder="••••••••" value={password} onChange={(e) => setPassword(e.target.value)} required />
+            </div>
+            {error && <p role="alert" className="rounded-lg bg-status-down/10 px-3 py-2 text-body-sm text-error">{error}</p>}
+            <button className="btn-primary w-full !py-3" disabled={loading}>
+              {loading ? "Un instant…" : mode === "login" ? "Se connecter" : "Créer le compte"}
+            </button>
+          </form>
+          <button className="mt-5 text-body-sm font-semibold text-primary-container hover:text-primary" onClick={() => setMode(mode === "login" ? "signup" : "login")}>
+            {mode === "login" ? "Pas de compte ? Créer un compte" : "Déjà un compte ? Se connecter"}
           </button>
-        </form>
-        <button className="mt-4 text-sm text-brand-600 hover:underline" onClick={() => setMode(mode === "login" ? "signup" : "login")}>
-          {mode === "login" ? "Pas de compte ? Créer un compte" : "Déjà un compte ? Se connecter"}
-        </button>
+        </div>
       </div>
     </div>
   );

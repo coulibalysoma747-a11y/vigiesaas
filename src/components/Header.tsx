@@ -1,27 +1,67 @@
 "use client";
 import Link from "next/link";
+import { signOut } from "firebase/auth";
+import { Icon } from "@/components/Icon";
+import { Logo } from "@/components/Logo";
 import { useAuth } from "@/components/AuthProvider";
 import { auth } from "@/lib/firebase";
-import { signOut } from "firebase/auth";
+
+const LINKS = [
+  { href: "/brocante", label: "Brocante" },
+  { href: "/comment-ca-marche", label: "Comment ça marche" },
+];
 
 export function Header() {
-  const { user } = useAuth();
+  const { user, loading } = useAuth();
+  const signedIn = !loading && !!user;
   return (
-    <header className="border-b border-slate-200 bg-white/80 backdrop-blur">
-      <div className="mx-auto flex max-w-5xl items-center justify-between px-6 py-4">
-        <Link href="/" className="text-xl font-extrabold text-brand-600">Vigie SaaS</Link>
-        <nav className="flex items-center gap-4 text-sm font-medium">
-          <Link href="/brocante" className="text-slate-600 hover:text-brand-600">Brocante</Link>
-          <Link href="/comment-ca-marche" className="text-slate-600 hover:text-brand-600">Comment ça marche</Link>
-          {user ? (
+    <header className="fixed inset-x-0 top-0 z-50 bg-surface-container-lowest/90 shadow-[0_1px_8px_rgba(0,0,0,0.04)] backdrop-blur-xl">
+      <div className="mx-auto flex h-16 max-w-7xl items-center justify-between gap-6 px-4 sm:px-8">
+        <div className="flex items-center gap-6">
+          <Logo />
+          <nav className="hidden items-center gap-6 md:flex" aria-label="Pages du site">
+            {LINKS.map((l) => (
+              <Link key={l.href} href={l.href} className="text-label-lg font-semibold text-on-surface-variant transition-colors hover:text-on-surface">{l.label}</Link>
+            ))}
+          </nav>
+        </div>
+
+        <div className="flex items-center gap-2 sm:gap-4">
+          {signedIn ? (
             <>
-              <Link href="/tableau-de-bord" className="rounded-lg bg-brand-600 px-3 py-1.5 text-white hover:bg-brand-700">Tableau de bord</Link>
-              <button onClick={() => signOut(auth)} className="text-slate-500 hover:text-slate-800">Déconnexion</button>
+              <button onClick={() => signOut(auth)} className="hidden px-2 py-1 text-label-lg font-semibold text-on-surface-variant transition-colors hover:text-on-surface sm:block">Déconnexion</button>
+              <Link href="/tableau-de-bord" className="btn-primary !px-4 !py-2">Tableau de bord</Link>
+              <Link href="/tableau-de-bord" aria-label="Mon compte" className="hidden h-8 w-8 items-center justify-center rounded-full bg-primary text-on-primary sm:flex">
+                <Icon name="user" size={16} />
+              </Link>
             </>
           ) : (
-            <Link href="/connexion" className="rounded-lg bg-brand-600 px-3 py-1.5 text-white hover:bg-brand-700">Connexion</Link>
+            <>
+              <Link href="/connexion" className="hidden px-2 py-1 text-label-lg font-semibold text-on-surface-variant transition-colors hover:text-on-surface sm:block">Connexion</Link>
+              <Link href="/connexion" className="btn-primary !px-4 !py-2">
+                <span className="sm:hidden">Commencer</span>
+                <span className="hidden sm:inline">Commencer gratuitement</span>
+              </Link>
+            </>
           )}
-        </nav>
+
+          {/* Menu des téléphones (sans JavaScript : <details>) */}
+          <details className="relative md:hidden">
+            <summary className="flex h-10 w-10 cursor-pointer list-none items-center justify-center rounded-lg text-on-surface transition hover:bg-surface-container [&::-webkit-details-marker]:hidden" aria-label="Menu">
+              <Icon name="menu" size={22} />
+            </summary>
+            <div className="absolute right-0 top-12 w-56 rounded-xl bg-surface-container-lowest p-2 shadow-xl">
+              {LINKS.map((l) => (
+                <Link key={l.href} href={l.href} className="block rounded-lg px-3 py-2.5 text-label-lg font-semibold text-on-surface hover:bg-surface-container-low">{l.label}</Link>
+              ))}
+              {signedIn ? (
+                <button onClick={() => signOut(auth)} className="block w-full rounded-lg px-3 py-2.5 text-left text-label-lg font-semibold text-on-surface-variant hover:bg-surface-container-low">Déconnexion</button>
+              ) : (
+                <Link href="/connexion" className="block rounded-lg px-3 py-2.5 text-label-lg font-semibold text-on-surface hover:bg-surface-container-low">Connexion</Link>
+              )}
+            </div>
+          </details>
+        </div>
       </div>
     </header>
   );
