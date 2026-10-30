@@ -1,7 +1,7 @@
 "use client";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { collection, addDoc, onSnapshot, query, orderBy, serverTimestamp } from "firebase/firestore";
+import { collection, addDoc, deleteDoc, doc, onSnapshot, query, orderBy, serverTimestamp } from "firebase/firestore";
 import { useAuth } from "@/components/AuthProvider";
 import { Icon } from "@/components/Icon";
 import { ListingCard } from "@/components/ListingCard";
@@ -69,6 +69,15 @@ export default function Brocante() {
       setShowForm(false);
     } finally {
       setSending(false);
+    }
+  };
+
+  const removeMine = async (item: Listing) => {
+    if (!window.confirm(`Retirer « ${item.name} » de la brocante ?`)) return;
+    try {
+      await deleteDoc(doc(db, "abandoned_saas", item.id));
+    } catch {
+      window.alert("Impossible de retirer l'annonce pour le moment.");
     }
   };
 
@@ -300,7 +309,7 @@ export default function Brocante() {
           <>
             <p className="mb-4 text-label-md font-semibold text-text-muted">{shown.length} annonce{shown.length > 1 ? "s" : ""}{filtersOn ? ` sur ${all.length}` : ""}</p>
             <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
-              {shown.map((it, i) => <ListingCard key={it.id} item={it} index={i} />)}
+              {shown.map((it, i) => <ListingCard key={it.id} item={it} index={i} onRemove={user && it.userId === user.uid ? () => removeMine(it) : undefined} />)}
             </div>
           </>
         )}

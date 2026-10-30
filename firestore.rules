@@ -1,0 +1,52 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Sites surveillés : le propriétaire peut LIRE les siens. Toute écriture passe par le serveur (/api/monitors),
+    // qui valide l'adresse, limite le nombre de sites et ne laisse modifier que le nom, la pause et la fréquence.
+    match /monitors/{id} {
+      allow read: if request.auth != null && request.auth.uid == resource.data.userId;
+      allow write: if false;
+    }
+
+    // Incidents : lecture par le propriétaire, écriture par le serveur seulement.
+    match /incidents/{id} {
+      allow read: if request.auth != null && request.auth.uid == resource.data.userId;
+      allow write: if false;
+    }
+
+    // Réglages : chacun lit et écrit les siens, avec un seul champ autorisé (alertsEnabled, vrai ou faux).
+    match /settings/{uid} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow create, update: if request.auth != null && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['alertsEnabled'])
+        && request.resource.data.alertsEnabled is bool;
+      allow delete: if false;
+    }
+
+    // Brocante : lecture publique. Création par un compte connecté, avec champs et tailles contrôlés.
+    // Pas de modification ; seul l'auteur peut retirer son annonce.
+    match /abandoned_saas/{id} {
+      allow read: if true;
+      allow create: if request.auth != null
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.keys().hasOnly(['userId', 'name', 'url', 'description', 'reason', 'price', 'stack', 'mrr', 'contact', 'createdAt'])
+        && request.resource.data.name is string && request.resource.data.name.size() > 0 && request.resource.data.name.size() <= 80
+        && request.resource.data.url is string && request.resource.data.url.size() > 0 && request.resource.data.url.size() <= 300
+        && request.resource.data.get('description', '') is string && request.resource.data.get('description', '').size() <= 1500
+        && request.resource.data.get('reason', '') is string && request.resource.data.get('reason', '').size() <= 300
+        && request.resource.data.get('price', '') is string && request.resource.data.get('price', '').size() <= 60
+        && request.resource.data.get('stack', '') is string && request.resource.data.get('stack', '').size() <= 200
+        && request.resource.data.get('mrr', '') is string && request.resource.data.get('mrr', '').size() <= 60
+        && request.resource.data.get('contact', '') is string && request.resource.data.get('contact', '').size() <= 200
+        && request.resource.data.createdAt == request.time;
+      allow update: if false;
+      allow delete: if request.auth != null && request.auth.uid == resource.data.userId;
+    }
+
+    // Tout le reste (limites de fréquence, etc.) : serveur seulement.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

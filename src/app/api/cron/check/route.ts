@@ -1,40 +1,66 @@
+import { createHash, timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
-import { Resend } from "resend";
+import { mailer } from "@/lib/alerts";
+import { checkMonitor, makeRecipientResolver, type MonitorDoc } from "@/lib/check-monitor";
 import { adminDb } from "@/lib/firebase-admin";
+import { isDue, MAX_MONITORS_PER_USER, normalizeInterval } from "@/lib/monitoring";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 300;
 
+const CONCURRENCY = 10;
+const MAX_MONITORS_PER_RUN = 1000;
+
+const digest = (s: string) => createHash("sha256").update(s).digest();
+
+async function pool<T>(items: T[], size: number, work: (item: T) => Promise<void>): Promise<void> {
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(size, items.length) }, async () => {
+      while (next < items.length) await work(items[next++]);
+    }),
+  );
+}
+
+/** Appelée toutes les 5 minutes par GitHub Actions. Sans CRON_SECRET configuré, la route reste FERMÉE (jamais ouverte à tout le monde). */
 export async function GET(req: Request) {
   const secret = process.env.CRON_SECRET;
-  if (secret && req.headers.get("authorization") !== `Bearer ${secret}`) {
-    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-  }
-  const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
+  if (!secret) return NextResponse.json({ error: "CRON_SECRET non configuré sur le serveur." }, { status: 503 });
+  const given = req.headers.get("authorization") ?? "";
+  if (!timingSafeEqual(digest(given), digest(`Bearer ${secret}`))) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+
+  const started = Date.now();
   const db = adminDb();
-  const snap = await db.collection("monitors").where("isActive", "==", true).get();
-  const results: { id: string; up: boolean; changed: boolean }[] = [];
+  const ctx = { db, resend: mailer(), recipient: makeRecipientResolver(db), now: new Date() };
+
+  const snap = await db.collection("monitors").where("isActive", "==", true).limit(MAX_MONITORS_PER_RUN).get();
+  const perUser = new Map<string, number>();
+  const due: { ref: FirebaseFirestore.DocumentReference; data: MonitorDoc }[] = [];
   for (const d of snap.docs) {
-    const m = d.data() as { url: string; lastStatus: boolean | null; userEmail?: string; name: string };
-    let up = false;
-    let code: number | null = null;
-    try {
-      const r = await fetch(m.url, { method: "HEAD", signal: AbortSignal.timeout(10000) });
-      up = r.ok;
-      code = r.status;
-    } catch {
-      up = false;
-    }
-    const changed = m.lastStatus !== null && m.lastStatus !== up;
-    await d.ref.update({ lastStatus: up, lastCheckedAt: new Date(), lastCode: code });
-    if (changed && resend && m.userEmail) {
-      await resend.emails.send({
-        from: "Vigie SaaS <onboarding@resend.dev>",
-        to: m.userEmail,
-        subject: `Vigie SaaS : ${m.name} est ${up ? "de nouveau en ligne" : "hors ligne"}`,
-        text: `Ton SaaS ${m.name} (${m.url}) est ${up ? "de nouveau en ligne" : "hors ligne"}.`,
-      });
-    }
-    results.push({ id: d.id, up, changed });
+    const data = d.data() as MonitorDoc;
+    if (typeof data.userId !== "string" || typeof data.url !== "string") continue;
+    const count = (perUser.get(data.userId) ?? 0) + 1;
+    perUser.set(data.userId, count);
+    if (count > MAX_MONITORS_PER_USER) continue; // au-delà de la limite, même si la base a été remplie à la main
+    const last = data.lastCheckedAt?.toMillis?.() ?? null;
+    if (isDue(last, normalizeInterval(data.intervalMin), ctx.now.getTime())) due.push({ ref: d.ref, data });
   }
-  return NextResponse.json({ checked: results.length, results });
+
+  let down = 0;
+  let changed = 0;
+  let alerted = 0;
+  let errors = 0;
+  await pool(due, CONCURRENCY, async ({ ref, data }) => {
+    try {
+      const out = await checkMonitor(ref, { ...data, name: data.name || data.url }, ctx);
+      if (!out.result.up) down += 1;
+      if (out.change !== "none") changed += 1;
+      if (out.alerted) alerted += 1;
+    } catch (e) {
+      errors += 1;
+      console.error("contrôle en erreur :", ref.id, e instanceof Error ? e.message : e);
+    }
+  });
+
+  return NextResponse.json({ monitors: snap.size, checked: due.length, down, changed, alerted, errors, ms: Date.now() - started });
 }

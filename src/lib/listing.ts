@@ -3,6 +3,7 @@ import { safeHref } from "@/lib/safe-url";
 /** Une annonce de la brocante, telle que stockée dans Firestore. `stack`, `mrr` et `contact` sont facultatifs et déclarés par le vendeur. */
 export type Listing = {
   id: string;
+  userId?: string;
   name: string;
   url: string;
   description?: string;

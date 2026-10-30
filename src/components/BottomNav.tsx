@@ -6,8 +6,9 @@ import { Icon, type IconName } from "@/components/Icon";
 const TABS: { href: string; label: string; icon: IconName }[] = [
   { href: "/", label: "Accueil", icon: "home" },
   { href: "/tableau-de-bord", label: "Mes sites", icon: "pulse" },
+  { href: "/incidents", label: "Incidents", icon: "alert" },
   { href: "/brocante", label: "Brocante", icon: "store" },
-  { href: "/comment-ca-marche", label: "Aide", icon: "help" },
+  { href: "/parametres", label: "Réglages", icon: "settings" },
 ];
 
 /** Barre d'onglets des téléphones (comme sur la maquette mobile) ; cachée sur ordinateur. */

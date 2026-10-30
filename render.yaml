@@ -3,10 +3,35 @@ services:
     name: vigiesaas
     env: node
     plan: free
-    buildCommand: npm install && npm run build
+    # NODE_ENV=production empêche npm d'installer Tailwind et TypeScript, pourtant indispensables à la construction :
+    # sans --include=dev, chaque mise en ligne échouait ("Cannot find module '@tailwindcss/turbopack'").
+    buildCommand: npm install --include=dev && npm run build
     startCommand: npm start
     envVars:
       - key: NODE_ENV
         value: production
+      # firebase-admin 14 exige Node 22 ou plus récent.
       - key: NODE_VERSION
-        value: "20"
+        value: "22"
+      # À renseigner une fois dans le tableau de bord Render (valeurs jamais écrites dans le dépôt).
+      - key: NEXT_PUBLIC_FIREBASE_API_KEY
+        sync: false
+      - key: NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN
+        sync: false
+      - key: NEXT_PUBLIC_FIREBASE_PROJECT_ID
+        sync: false
+      - key: NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET
+        sync: false
+      - key: NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID
+        sync: false
+      - key: NEXT_PUBLIC_FIREBASE_APP_ID
+        sync: false
+      - key: FIREBASE_SERVICE_ACCOUNT
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: CRON_SECRET
+        sync: false
+      # Facultatif : expéditeur des alertes une fois ton domaine vérifié chez Resend, ex. "Vigie SaaS <alertes@ton-domaine.com>".
+      - key: ALERT_FROM
+        sync: false

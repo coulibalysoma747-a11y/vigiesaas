@@ -1,5 +1,6 @@
-// src/lib/firebase-admin.ts
+// src/lib/firebase-admin.ts : accès serveur à Firebase (ne jamais importer depuis un composant client)
 import { initializeApp, getApps, cert, type App } from "firebase-admin/app";
+import { getAuth } from "firebase-admin/auth";
 import { getFirestore } from "firebase-admin/firestore";
 
 function adminApp(): App {
@@ -12,4 +13,8 @@ function adminApp(): App {
 
 export function adminDb() {
   return getFirestore(adminApp());
+}
+
+export function adminAuth() {
+  return getAuth(adminApp());
 }

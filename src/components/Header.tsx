@@ -6,21 +6,29 @@ import { Logo } from "@/components/Logo";
 import { useAuth } from "@/components/AuthProvider";
 import { auth } from "@/lib/firebase";
 
-const LINKS = [
+const PUBLIC_LINKS = [
   { href: "/brocante", label: "Brocante" },
   { href: "/comment-ca-marche", label: "Comment ça marche" },
+];
+
+const APP_LINKS = [
+  { href: "/tableau-de-bord", label: "Mes sites" },
+  { href: "/incidents", label: "Incidents" },
+  { href: "/brocante", label: "Brocante" },
+  { href: "/parametres", label: "Réglages" },
 ];
 
 export function Header() {
   const { user, loading } = useAuth();
   const signedIn = !loading && !!user;
+  const links = signedIn ? APP_LINKS : PUBLIC_LINKS;
   return (
     <header className="fixed inset-x-0 top-0 z-50 bg-surface-container-lowest/90 shadow-[0_1px_8px_rgba(0,0,0,0.04)] backdrop-blur-xl">
       <div className="mx-auto flex h-16 max-w-7xl items-center justify-between gap-6 px-4 sm:px-8">
         <div className="flex items-center gap-6">
           <Logo />
           <nav className="hidden items-center gap-6 md:flex" aria-label="Pages du site">
-            {LINKS.map((l) => (
+            {links.map((l) => (
               <Link key={l.href} href={l.href} className="text-label-lg font-semibold text-on-surface-variant transition-colors hover:text-on-surface">{l.label}</Link>
             ))}
           </nav>
@@ -51,7 +59,7 @@ export function Header() {
               <Icon name="menu" size={22} />
             </summary>
             <div className="absolute right-0 top-12 w-56 rounded-xl bg-surface-container-lowest p-2 shadow-xl">
-              {LINKS.map((l) => (
+              {links.map((l) => (
                 <Link key={l.href} href={l.href} className="block rounded-lg px-3 py-2.5 text-label-lg font-semibold text-on-surface hover:bg-surface-container-low">{l.label}</Link>
               ))}
               {signedIn ? (

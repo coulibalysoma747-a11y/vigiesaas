@@ -7,7 +7,10 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - name: Ping
+      - name: Contrôle des sites
+        # --fail-with-body : une réponse 401/503 fait échouer l'action (visible dans l'onglet Actions) au lieu de passer en silence.
+        # --max-time 120 : sur l'offre gratuite de Render, le premier appel réveille le service (jusqu'à ~1 minute).
         run: |
-          curl -sS -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+          curl -sS --fail-with-body --max-time 120 \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
             "${{ secrets.APP_URL }}/api/cron/check"

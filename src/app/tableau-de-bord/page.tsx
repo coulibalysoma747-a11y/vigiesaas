@@ -1,37 +1,37 @@
 "use client";
-import { useEffect, useState } from "react";
+import Link from "next/link";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { collection, addDoc, query, where, onSnapshot, deleteDoc, doc, serverTimestamp } from "firebase/firestore";
+import { collection, onSnapshot, query, where } from "firebase/firestore";
 import { useAuth } from "@/components/AuthProvider";
 import { Icon } from "@/components/Icon";
 import { StatusDot, StatusPill } from "@/components/StatusDot";
+import { UptimeRibbon } from "@/components/UptimeRibbon";
+import { VerifyEmailBanner } from "@/components/VerifyEmailBanner";
+import { api } from "@/lib/api-client";
 import { db } from "@/lib/firebase";
+import { MAX_MONITORS_PER_USER, formatPct, shortHost, summarize } from "@/lib/monitoring";
 import { PENDING_URL_KEY } from "@/lib/pending-url";
-import { ago, hostOf } from "@/lib/safe-url";
+import { ago } from "@/lib/safe-url";
+import { dateOf, type Monitor } from "@/lib/types";
 
-type Monitor = {
-  id: string;
-  name: string;
-  url: string;
-  lastStatus: boolean | null;
-  lastCode?: number | null;
-  lastCheckedAt?: { toDate: () => Date } | null;
-};
+function pendingUrl(): string {
+  try {
+    return typeof window === "undefined" ? "" : (window.sessionStorage.getItem(PENDING_URL_KEY) ?? "");
+  } catch {
+    return "";
+  }
+}
 
 export default function Dashboard() {
   const { user, loading } = useAuth();
   const router = useRouter();
   const [monitors, setMonitors] = useState<Monitor[] | null>(null);
-  // Adresse saisie sur l'accueil avant la création du compte : préremplie (la clé est effacée juste après, voir plus bas).
-  const [url, setUrl] = useState(() => {
-    try {
-      return typeof window === "undefined" ? "" : (window.sessionStorage.getItem(PENDING_URL_KEY) ?? "");
-    } catch {
-      return "";
-    }
-  });
+  // Adresse saisie sur l'accueil avant la création du compte : préremplie (la clé est effacée juste après).
+  const [url, setUrl] = useState(pendingUrl);
   const [name, setName] = useState("");
   const [adding, setAdding] = useState(false);
+  const [error, setError] = useState("");
 
   useEffect(() => {
     if (loading) return;
@@ -51,43 +51,40 @@ export default function Dashboard() {
 
   const add = async (e: React.FormEvent) => {
     e.preventDefault();
-    const clean = url.trim();
-    if (!user || !clean) return;
-    // Sans « https:// », la vérification automatique ne peut pas joindre le site : on l'ajoute pour l'utilisateur.
-    const full = /^https?:\/\//i.test(clean) ? clean : `https://${clean}`;
+    setError("");
     setAdding(true);
     try {
-      await addDoc(collection(db, "monitors"), {
-        userId: user.uid,
-        userEmail: user.email,
-        url: full,
-        name: name.trim() || hostOf(full),
-        isActive: true,
-        lastStatus: null,
-        createdAt: serverTimestamp(),
-      });
+      await api("/api/monitors", { method: "POST", body: { url, name } });
       setUrl("");
       setName("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Ajout impossible.");
     } finally {
       setAdding(false);
     }
   };
 
-  const remove = async (m: Monitor) => {
-    if (!window.confirm(`Arrêter la surveillance de « ${m.name} » ?`)) return;
-    await deleteDoc(doc(db, "monitors", m.id));
-  };
-
-  const list = monitors ?? [];
-  const online = list.filter((m) => m.lastStatus === true).length;
-  const offline = list.filter((m) => m.lastStatus === false).length;
+  const list = useMemo(() => [...(monitors ?? [])].sort((a, b) => (dateOf(b.lastChangedAt)?.getTime() ?? 0) - (dateOf(a.lastChangedAt)?.getTime() ?? 0) || a.name.localeCompare(b.name, "fr")), [monitors]);
+  const active = list.filter((m) => m.isActive !== false);
+  const online = active.filter((m) => m.lastStatus === true).length;
+  const offline = active.filter((m) => m.lastStatus === false).length;
+  const overall = useMemo(() => {
+    let checks = 0;
+    let weighted = 0;
+    for (const m of list) {
+      const s = summarize(m.days);
+      checks += s.checks;
+      weighted += (s.uptimePct ?? 0) * s.checks;
+    }
+    return checks ? weighted / checks : null;
+  }, [list]);
 
   if (loading || monitors === null) {
     return (
-      <div className="mx-auto max-w-4xl px-4 py-12 sm:px-8" aria-busy="true">
+      <div className="mx-auto max-w-5xl px-4 py-12 sm:px-8" aria-busy="true">
         <div className="h-8 w-56 animate-pulse rounded-lg bg-surface-container" />
-        <div className="mt-8 grid grid-cols-3 gap-3">
-          {[0, 1, 2].map((i) => <div key={i} className="h-24 animate-pulse rounded-xl bg-surface-container" />)}
+        <div className="mt-8 grid grid-cols-2 gap-3 sm:grid-cols-4">
+          {[0, 1, 2, 3].map((i) => <div key={i} className="h-24 animate-pulse rounded-xl bg-surface-container" />)}
         </div>
         <div className="mt-6 h-40 animate-pulse rounded-xl bg-surface-container" />
       </div>
@@ -95,63 +92,75 @@ export default function Dashboard() {
   }
 
   return (
-    <div className="mx-auto max-w-4xl px-4 py-10 sm:px-8 sm:py-14">
-      <h1 className="font-head text-headline-lg font-bold tracking-tight text-on-surface">Tableau de bord</h1>
-      <p className="mt-1.5 text-body-md text-text-muted">Tes sites sont vérifiés toutes les 5 minutes. Tu reçois un e-mail à chaque changement d&apos;état.</p>
+    <div className="mx-auto max-w-5xl px-4 py-10 sm:px-8 sm:py-14">
+      <VerifyEmailBanner />
+      <h1 className="font-head text-headline-lg font-bold tracking-tight text-on-surface">Mes sites</h1>
+      <p className="mt-1.5 text-body-md text-text-muted">Chaque site est contrôlé automatiquement. Tu reçois un e-mail à chaque panne et à chaque retour en ligne.</p>
 
-      <div className="mt-8 grid grid-cols-3 gap-3">
+      <div className="mt-8 grid grid-cols-2 gap-3 sm:grid-cols-4">
         {[
-          { label: "Surveillés", value: list.length, tone: "text-on-surface" },
-          { label: "En ligne", value: online, tone: "text-status-up" },
-          { label: "Hors ligne", value: offline, tone: offline > 0 ? "text-status-down" : "text-text-muted" },
+          { label: "Surveillés", value: String(active.length), tone: "text-on-surface" },
+          { label: "En ligne", value: String(online), tone: "text-status-up" },
+          { label: "Hors ligne", value: String(offline), tone: offline > 0 ? "text-status-down" : "text-text-muted" },
+          { label: "Disponibilité 30 j", value: formatPct(overall), tone: "text-on-surface" },
         ].map((s) => (
-          <div key={s.label} className="card px-4 py-5 text-center sm:text-left">
-            <p className={`font-head text-headline-lg font-bold tabular-nums ${s.tone}`}>{s.value}</p>
+          <div key={s.label} className="card px-4 py-5">
+            <p className={`font-head text-headline-md font-bold tabular-nums sm:text-headline-lg ${s.tone}`}>{s.value}</p>
             <p className="mt-1 text-label-md font-semibold text-text-muted">{s.label}</p>
           </div>
         ))}
       </div>
 
-      <form onSubmit={add} className="card mt-6 flex flex-col gap-3 p-4 sm:flex-row sm:items-end">
-        <div className="flex-1">
-          <label htmlFor="url" className="mb-1.5 block text-label-md font-semibold text-on-surface-variant">Adresse du site</label>
-          <input id="url" className="input" placeholder="mon-saas.com" value={url} onChange={(e) => setUrl(e.target.value)} required />
+      <form onSubmit={add} className="card mt-6 p-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+          <div className="flex-1">
+            <label htmlFor="url" className="mb-1.5 block text-label-md font-semibold text-on-surface-variant">Adresse du site</label>
+            <input id="url" className="input" placeholder="mon-saas.com" value={url} onChange={(e) => setUrl(e.target.value)} required />
+          </div>
+          <div className="sm:w-52">
+            <label htmlFor="name" className="mb-1.5 block text-label-md font-semibold text-on-surface-variant">Nom (facultatif)</label>
+            <input id="name" className="input" placeholder="Mon application" value={name} onChange={(e) => setName(e.target.value)} maxLength={80} />
+          </div>
+          <button className="btn-primary sm:!py-3" disabled={adding || list.length >= MAX_MONITORS_PER_USER}>{adding ? "Ajout…" : "Surveiller"}</button>
         </div>
-        <div className="sm:w-52">
-          <label htmlFor="name" className="mb-1.5 block text-label-md font-semibold text-on-surface-variant">Nom (facultatif)</label>
-          <input id="name" className="input" placeholder="Mon application" value={name} onChange={(e) => setName(e.target.value)} />
-        </div>
-        <button className="btn-primary sm:!py-3" disabled={adding}>{adding ? "Ajout…" : "Surveiller"}</button>
+        {error && <p role="alert" className="mt-3 rounded-lg bg-status-down/10 px-3 py-2 text-body-sm text-error">{error}</p>}
+        <p className="mt-3 text-label-md text-text-muted">{list.length} / {MAX_MONITORS_PER_USER} sites · contrôle toutes les 5 minutes par défaut (modifiable pour chaque site).</p>
       </form>
 
       <div className="mt-6">
         {list.length === 0 ? (
           <div className="rounded-xl border border-dashed border-outline-variant/80 bg-surface-container-lowest/60 px-6 py-14 text-center">
-            <span className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-primary-container/10 text-primary-container">
-              <Icon name="pulse" size={22} />
-            </span>
+            <span className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-primary-container/10 text-primary-container"><Icon name="pulse" size={22} /></span>
             <p className="mt-4 font-head font-bold text-on-surface">Aucun site surveillé pour l&apos;instant</p>
-            <p className="mt-1 text-body-sm text-text-muted">Colle l&apos;adresse de ton SaaS ci-dessus : la première vérification arrive dans les 5 minutes.</p>
+            <p className="mt-1 text-body-sm text-text-muted">Colle l&apos;adresse de ton SaaS ci-dessus : le premier contrôle arrive dans les 5 minutes.</p>
           </div>
         ) : (
           <ul className="card divide-y divide-border-muted/70 overflow-hidden">
             {list.map((m) => {
-              const checked = m.lastCheckedAt?.toDate?.();
+              const s = summarize(m.days);
+              const checked = dateOf(m.lastCheckedAt);
+              const paused = m.isActive === false;
               return (
-                <li key={m.id} className="flex flex-wrap items-center gap-x-4 gap-y-3 px-4 py-4 sm:px-5">
-                  <StatusDot status={m.lastStatus} />
-                  <div className="min-w-0 flex-1 basis-48">
-                    <p className="truncate font-semibold text-on-surface">{m.name}</p>
-                    <p className="truncate text-body-sm text-text-muted">{hostOf(m.url)}</p>
-                  </div>
-                  <div className="hidden text-right text-label-md text-text-muted sm:block">
-                    <p>{checked ? `Vérifié ${ago(checked)}` : "Pas encore vérifié"}</p>
-                    {m.lastCode ? <p className="mt-0.5 font-medium">HTTP {m.lastCode}</p> : null}
-                  </div>
-                  <StatusPill status={m.lastStatus} />
-                  <button className="rounded-lg px-2.5 py-1.5 text-label-md font-semibold text-text-muted transition hover:bg-status-down/10 hover:text-status-down" onClick={() => remove(m)} aria-label={`Arrêter la surveillance de ${m.name}`}>
-                    Supprimer
-                  </button>
+                <li key={m.id}>
+                  <Link href={`/tableau-de-bord/${m.id}`} className="flex flex-wrap items-center gap-x-4 gap-y-3 px-4 py-4 transition-colors hover:bg-surface-subtle sm:px-5">
+                    <StatusDot status={paused ? null : m.lastStatus} />
+                    <div className="min-w-0 flex-1 basis-44">
+                      <p className="truncate font-semibold text-on-surface">{m.name}</p>
+                      <p className="truncate text-body-sm text-text-muted">{shortHost(m.url)}</p>
+                    </div>
+                    <div className="hidden lg:block"><UptimeRibbon bars={s.bars} compact /></div>
+                    <div className="hidden w-24 text-right sm:block">
+                      <p className="text-label-md font-semibold text-on-surface">{formatPct(s.uptimePct)}</p>
+                      <p className="text-label-sm text-text-muted">{s.avgLatencyMs !== null ? `${s.avgLatencyMs} ms` : "—"}</p>
+                    </div>
+                    <div className="hidden w-28 text-right text-label-md text-text-muted md:block">{checked ? ago(checked) : "pas encore contrôlé"}</div>
+                    {paused ? (
+                      <span className="inline-flex items-center rounded-full bg-surface-container px-2.5 py-1 text-label-sm font-bold text-text-muted">En pause</span>
+                    ) : (
+                      <StatusPill status={m.lastStatus} />
+                    )}
+                    <Icon name="arrow-right" size={16} className="hidden text-text-muted sm:block" />
+                  </Link>
                 </li>
               );
             })}

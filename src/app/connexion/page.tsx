@@ -1,7 +1,7 @@
 "use client";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { signInWithEmailAndPassword, createUserWithEmailAndPassword } from "firebase/auth";
+import { signInWithEmailAndPassword, createUserWithEmailAndPassword, sendEmailVerification } from "firebase/auth";
 import { Icon } from "@/components/Icon";
 import { auth } from "@/lib/firebase";
 
@@ -25,7 +25,11 @@ export default function LoginPage() {
     setLoading(true);
     try {
       if (mode === "login") await signInWithEmailAndPassword(auth, email, password);
-      else await createUserWithEmailAndPassword(auth, email, password);
+      else {
+        const created = await createUserWithEmailAndPassword(auth, email, password);
+        // Lien de vérification : tant qu'il n'est pas cliqué, aucune alerte n'est envoyée à cette adresse.
+        await sendEmailVerification(created.user).catch(() => {});
+      }
       router.push("/tableau-de-bord");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Erreur");

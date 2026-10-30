@@ -1,47 +1,40 @@
 # Vigie SaaS
 
-Surveillance de SaaS par email + brocante des projets abandonnés.
+Surveillance de sites par e-mail + brocante des projets SaaS abandonnés.
 
-## Stack (100 % gratuit)
-- Next.js (Vercel)
-- Firebase Auth + Firestore (plan Spark)
-- Resend (emails)
-- GitHub Actions (cron toutes les 5 min)
+## Ce que fait l'application
+- **Mes sites** : chaque site est contrôlé automatiquement (5, 10, 30 ou 60 minutes au choix). Temps de réponse mesuré, disponibilité sur 30 jours, barres d'historique, pause / reprise, « Vérifier maintenant ».
+- **Incidents** : chaque panne avec son début, sa cause et sa durée.
+- **Alertes e-mail** à chaque panne et à chaque retour en ligne (un second essai a lieu quelques secondes après un échec : une micro-coupure ne déclenche rien). Envoyées seulement à l'adresse **vérifiée** du compte.
+- **Réglages** : alertes activées ou non, e-mail de test.
+- **Brocante** : annonces de projets abandonnés (recherche, tri, filtres, contact direct du vendeur, retrait de ses propres annonces).
+
+## Stack (gratuit)
+- Next.js sur Render (offre gratuite)
+- Firebase Auth + Firestore (offre Spark)
+- Resend (e-mails)
+- GitHub Actions (déclencheur toutes les 5 minutes)
+
+## Variables d'environnement
+Voir `.env.local.example`. En plus : `ALERT_FROM` (facultatif, expéditeur des alertes). `APP_URL` n'est pas nécessaire sur Render (`RENDER_EXTERNAL_URL` est fourni).
 
 ## Démarrage local
-1. Copier `.env.local.example` en `.env.local` et remplir les clés Firebase/Resend.
+1. Copier `.env.local.example` en `.env.local` et remplir les valeurs.
 2. `npm install`
 3. `npm run dev`
+4. Tests de la logique : `node --test scripts/test-monitoring.mts`
 
-## Règles Firestore (à coller dans la console Firebase > Firestore > Règles)
-```
-rules_version = '2';
-service cloud.firestore {
-  match /databases/{database}/documents {
-    match /monitors/{id} {
-      allow read, write: if request.auth != null && request.auth.uid == resource.data.userId;
-      allow create: if request.auth != null && request.auth.uid == request.resource.data.userId;
-    }
-    match /abandoned_saas/{id} {
-      allow read: if true;
-      allow create: if request.auth != null;
-    }
-  }
-}
-```
+## Règles Firestore (OBLIGATOIRE)
+Coller le contenu du fichier [`firestore.rules`](firestore.rules) dans la console Firebase > Firestore > Règles, puis « Publier ».
+Elles interdisent au navigateur d'écrire dans `monitors` et `incidents` : tout passe par le serveur, qui valide les adresses
+(pas de réseau privé), limite à 20 sites par compte et envoie les alertes à l'adresse du compte, jamais ailleurs.
+Sans ces règles, l'ancien comportement reste ouvert (un utilisateur pourrait écrire n'importe quoi dans la base).
 
-## Déploiement
-- Vercel : importer le repo, ajouter les variables d'environnement.
-- GitHub Actions : ajouter les secrets `CRON_SECRET` et `APP_URL` (URL Vercel).
+## Mise en ligne sur Render
+1. « New + » > « Blueprint » > choisir ce dépôt : Render lit `render.yaml` (commande de construction et version de Node déjà réglées).
+2. Renseigner les variables marquées dans l'écran Render : clés Firebase (6 variables `NEXT_PUBLIC_…` + `FIREBASE_SERVICE_ACCOUNT`), `RESEND_API_KEY`, `CRON_SECRET` (une longue phrase au hasard).
+3. Dans Firebase > Authentication > Paramètres > Domaines autorisés : ajouter le domaine Render (ex. `vigiesaas.onrender.com`).
+4. Sur GitHub (Settings > Secrets > Actions) : `CRON_SECRET` (même valeur) et `APP_URL` (ex. `https://vigiesaas.onrender.com`). L'onglet Actions montre si le déclencheur réussit ; il réveille aussi le service gratuit.
+5. **Alertes vers les utilisateurs** : sans domaine vérifié chez Resend, l'expéditeur de test (`onboarding@resend.dev`) n'écrit qu'au propriétaire du compte Resend. Vérifier un domaine, puis définir `ALERT_FROM`.
 
-
-## Déploiement sur Render (gratuit)
-1. Créer un compte Render (gratuit).
-2. « New + » → « Web Service » → connecter ton repo GitHub.
-3. Render détecte Next.js automatiquement. Laisser les valeurs par défaut (Build: `npm run build`, Start: `npm start`).
-4. Dans « Environment », ajouter toutes les variables de `.env.local` (Firebase, Resend, CRON_SECRET).
-5. Plan : choisir « Free » (le service s'endort après 15 min d'inactivité, mais se réveille à la prochaine visite).
-6. GitHub Actions : ajouter les secrets `CRON_SECRET` et `APP_URL` (= URL Render, ex. https://vigiesaas.onrender.com). Le cron réveille aussi le service toutes les 5 min.
-
-Note : le plan gratuit Render est suffisant pour tester. Pour un service toujours actif, il faudra un plan payant plus tard.
-
+L'offre gratuite de Render s'endort après 15 minutes sans visite ; le déclencheur toutes les 5 minutes la réveille.

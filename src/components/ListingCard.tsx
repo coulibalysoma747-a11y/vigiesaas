@@ -15,7 +15,7 @@ const KIND_STYLE = {
 } as const;
 
 /** Carte d'annonce de la brocante. `example` : annonce d'illustration, sans lien ni contact. */
-export function ListingCard({ item, index, example = false }: { item: Listing; index: number; example?: boolean }) {
+export function ListingCard({ item, index, example = false, onRemove }: { item: Listing; index: number; example?: boolean; onRemove?: () => void }) {
   const accent = ACCENTS[index % ACCENTS.length];
   const kind = priceKind(item.price);
   const tags = stackTags(item.stack);
@@ -84,6 +84,12 @@ export function ListingCard({ item, index, example = false }: { item: Listing; i
             <span>Voir le projet</span>
             <Icon name="external" size={16} />
           </a>
+        )}
+
+        {onRemove && (
+          <button onClick={onRemove} className="w-full rounded-xl px-3 py-2 text-label-md font-semibold text-text-muted transition hover:bg-status-down/10 hover:text-status-down">
+            Retirer mon annonce
+          </button>
         )}
       </div>
     </article>
