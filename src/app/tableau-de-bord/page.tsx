@@ -39,28 +39,39 @@ export default function Dashboard() {
     await deleteDoc(doc(db, "monitors", id));
   };
 
-  if (loading) return <p className="p-6">Chargement…</p>;
+  if (loading) return <p className="p-6 text-slate-500">Chargement…</p>;
 
   return (
-    <main className="mx-auto max-w-3xl p-6">
-      <h1 className="text-2xl font-bold">Tableau de bord</h1>
-      <form onSubmit={add} className="mt-4 flex gap-2">
-        <input className="flex-1 rounded border p-2" placeholder="https://mon-saas.com" value={url} onChange={(e) => setUrl(e.target.value)} required />
-        <input className="w-40 rounded border p-2" placeholder="Nom" value={name} onChange={(e) => setName(e.target.value)} />
-        <button className="rounded bg-black px-4 py-2 text-white">Ajouter</button>
+    <div className="mx-auto max-w-4xl px-6 py-10">
+      <h1 className="text-3xl font-extrabold">Tableau de bord</h1>
+      <p className="mt-1 text-slate-500">Surveille tes SaaS. Ajoute une URL pour commencer.</p>
+
+      <form onSubmit={add} className="mt-6 flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:flex-row">
+        <input className="flex-1 rounded-xl border border-slate-300 px-4 py-2.5 outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20" placeholder="https://mon-saas.com" value={url} onChange={(e) => setUrl(e.target.value)} required />
+        <input className="sm:w-48 rounded-xl border border-slate-300 px-4 py-2.5 outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20" placeholder="Nom" value={name} onChange={(e) => setName(e.target.value)} />
+        <button className="rounded-xl bg-brand-600 px-5 py-2.5 font-semibold text-white hover:bg-brand-700">Ajouter</button>
       </form>
-      <ul className="mt-6 space-y-2">
+
+      <div className="mt-8 space-y-3">
+        {monitors.length === 0 && (
+          <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-10 text-center text-slate-500">
+            Aucun monitor pour l&apos;instant. Ajoute ton premier SaaS ci-dessus.
+          </div>
+        )}
         {monitors.map((m) => (
-          <li key={m.id} className="flex items-center justify-between rounded border p-3">
+          <div key={m.id} className="flex items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
             <div>
-              <p className="font-semibold">{m.name}</p>
+              <p className="font-semibold text-slate-800">{m.name}</p>
               <p className="text-sm text-slate-500">{m.url}</p>
-              <p className="text-sm">Statut : {m.lastStatus === null ? "inconnu" : m.lastStatus ? "en ligne" : "hors ligne"}</p>
+              <span className={`mt-2 inline-block rounded-full px-2.5 py-0.5 text-xs font-bold ${m.lastStatus === null ? "bg-slate-100 text-slate-600" : m.lastStatus ? "bg-emerald-100 text-emerald-700" : "bg-red-100 text-red-700"}`}>
+                {m.lastStatus === null ? "Statut inconnu" : m.lastStatus ? "En ligne" : "Hors ligne"}
+              </span>
             </div>
-            <button className="text-red-600" onClick={() => remove(m.id)}>Supprimer</button>
-          </li>
+            <button className="text-sm font-medium text-red-600 hover:underline" onClick={() => remove(m.id)}>Supprimer</button>
+          </div>
         ))}
-      </ul>
-    </main>
+      </div>
+    </div>
   );
 }
+

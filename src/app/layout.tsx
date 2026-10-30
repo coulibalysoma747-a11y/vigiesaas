@@ -11,11 +11,16 @@ export const metadata: Metadata = {
   description: "Surveille ton SaaS par email et dépose les projets abandonnés.",
 };
 
+import { Header } from "@/components/Header";
+
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="fr" className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}>
       <body className="min-h-full flex flex-col">
-        <AuthProvider>{children}</AuthProvider>
+        <AuthProvider>
+          <Header />
+          <main className="flex-1">{children}</main>
+        </AuthProvider>
       </body>
     </html>
   );
