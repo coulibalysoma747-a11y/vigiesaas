@@ -43,7 +43,7 @@ export function VerifyEmailBanner() {
         <Icon name="mail" size={20} className="mt-0.5 shrink-0 text-status-degraded" />
         <div>
           <p className="text-label-lg font-semibold text-on-surface">Vérifie ton adresse e-mail pour recevoir les alertes</p>
-          <p className="text-body-sm text-on-surface-variant">Nous avons envoyé un lien à {user.email}. Tant qu&apos;il n&apos;est pas cliqué, tes sites sont surveillés mais aucune alerte n&apos;est envoyée.</p>
+          <p className="text-body-sm text-on-surface-variant">Nous avons envoyé un lien à {user.email}. <strong>Regarde aussi dans tes courriers indésirables (spam)</strong>, puis clique sur « Pas un spam ». Tant qu&apos;il n&apos;est pas cliqué, tes sites sont surveillés mais aucune alerte n&apos;est envoyée.</p>
           {message && <p className="mt-1 text-body-sm font-medium text-primary">{message}</p>}
         </div>
       </div>
