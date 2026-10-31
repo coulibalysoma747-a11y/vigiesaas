@@ -10,8 +10,16 @@ const inter = Inter({ variable: "--font-inter", subsets: ["latin"] });
 const jakarta = Plus_Jakarta_Sans({ variable: "--font-jakarta", subsets: ["latin"], weight: ["600", "700", "800"] });
 
 export const metadata: Metadata = {
+  metadataBase: new URL(process.env.APP_URL || process.env.RENDER_EXTERNAL_URL || "https://vigiesaas.onrender.com"),
   title: "Vigie SaaS — sois prévenu quand ton site tombe",
   description: "Vigie SaaS vérifie ton site toutes les 5 minutes et t'alerte par e-mail. Et une brocante pour les projets SaaS abandonnés.",
+  openGraph: {
+    type: "website",
+    locale: "fr_FR",
+    siteName: "Vigie SaaS",
+    title: "Vigie SaaS — sois prévenu quand ton site tombe",
+    description: "Surveillance de sites par e-mail, tests de pages et d'application, et une brocante pour les projets SaaS abandonnés.",
+  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

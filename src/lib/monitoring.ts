@@ -84,6 +84,21 @@ export function isDue(lastCheckedMs: number | null, intervalMin: number, nowMs: 
   return nowMs - lastCheckedMs >= intervalMin * 60_000 - 30_000;
 }
 
+/** Mode vigilance (par site) : contrôle chaque minute et rappel par e-mail toutes les 30 minutes tant que le site reste hors ligne. */
+export const VIGILANCE_INTERVAL_MIN = 1;
+export const VIGILANCE_REMIND_MIN = 30;
+export const MAX_VIGILANCE_PER_USER = 5;
+
+/** Intervalle réellement appliqué : 1 minute en mode vigilance, sinon le choix de l'utilisateur. */
+export function effectiveInterval(m: { intervalMin?: unknown; vigilance?: unknown }): number {
+  return m.vigilance === true ? VIGILANCE_INTERVAL_MIN : normalizeInterval(m.intervalMin);
+}
+
+/** Un rappel est dû si le dernier message (ou le début de la panne) remonte à 30 minutes ou plus (30 s de tolérance). */
+export function reminderDue(sinceMs: number | null, nowMs: number): boolean {
+  return sinceMs !== null && nowMs - sinceMs >= VIGILANCE_REMIND_MIN * 60_000 - 30_000;
+}
+
 export type Transition = "none" | "went_down" | "first_down" | "recovered";
 
 export function transition(previous: boolean | null, up: boolean): Transition {

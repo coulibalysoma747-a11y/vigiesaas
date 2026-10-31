@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { decryptSecret, encryptSecret, vaultReady } from "../src/lib/robot-crypto.ts";
 import {
+  effectiveInterval, reminderDue,
   normalizeRobotConfig, robotVerdict, sanitizeRobotReport,
   crawlDue, crawlLinks, crawlPath, fnv1a, mergeDiscovered, pageKey, pageStep, problemTotal,
   buildFeatureList, extractLinks, featureUrl, nameFromPath, normalizeExpectStatus, normalizeFeature, siteHealth,
@@ -426,3 +427,22 @@ test("coffre : chiffrement AES-256-GCM, rien d'illisible modifiable, inutilisabl
     else process.env.ROBOT_ENC_KEY = saved;
   }
 });
+
+test("vigilance : contrôle chaque minute, sinon l'intervalle choisi", () => {
+  assert.equal(effectiveInterval({ intervalMin: 30, vigilance: true }), 1);
+  assert.equal(effectiveInterval({ intervalMin: 30 }), 30);
+  assert.equal(effectiveInterval({ intervalMin: 30, vigilance: false }), 30);
+  assert.equal(effectiveInterval({ intervalMin: 7 }), 5);
+  assert.equal(effectiveInterval({ vigilance: "oui" }), 5); // seul « vrai » active le mode
+});
+
+test("vigilance : rappel dû après 30 minutes seulement (tolérance 30 s)", () => {
+  const now = 5_000_000_000;
+  assert.equal(reminderDue(null, now), false);
+  assert.equal(reminderDue(now - 10 * 60_000, now), false);
+  assert.equal(reminderDue(now - 29 * 60_000, now), false);
+  assert.equal(reminderDue(now - 30 * 60_000, now), true);
+  assert.equal(reminderDue(now - 29.6 * 60_000, now), true);
+  assert.equal(reminderDue(now - 3 * 3600_000, now), true);
+});
+

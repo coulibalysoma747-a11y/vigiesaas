@@ -1,0 +1,28 @@
+name: Vigie watchdog
+# Surveillant extérieur : vérifie que Vigie SaaS répond ET que son contrôle automatique tourne.
+# Panne = une issue « 🔴 Vigie SaaS est en panne » est ouverte (e-mail), retour à la normale = elle est fermée (e-mail).
+# GitHub lance les tâches programmées au mieux toutes les 5 minutes (parfois avec quelques minutes de retard).
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: vigie-watchdog
+  cancel-in-progress: false
+
+jobs:
+  watchdog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Vérifier Vigie
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/watchdog.mjs

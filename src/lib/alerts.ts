@@ -8,7 +8,7 @@ export function appUrl(): string {
   return (process.env.APP_URL || process.env.RENDER_EXTERNAL_URL || "").replace(/\/$/, "");
 }
 
-export type AlertKind = "down" | "up" | "slow" | "slow_ok" | "ssl" | "ssl_ok" | "feature_down" | "feature_up" | "pages_down" | "pages_up" | "robot_down" | "robot_up" | "test";
+export type AlertKind = "down" | "down_again" | "up" | "slow" | "slow_ok" | "ssl" | "ssl_ok" | "feature_down" | "feature_up" | "pages_down" | "pages_up" | "robot_down" | "robot_up" | "test";
 
 type AlertInput = {
   kind: AlertKind;
@@ -61,6 +61,13 @@ export function buildAlert(input: AlertInput): { subject: string; text: string; 
       title = `${a.name} est hors ligne`;
       color = RED;
       lines = [`${site} est hors ligne.`, a.reason ? `Cause constatée : ${a.reason}.` : ""];
+      break;
+    case "down_again":
+      subject = `Vigie SaaS : ${a.name} est TOUJOURS hors ligne`;
+      eyebrow = "Toujours en panne";
+      title = `${a.name} est toujours hors ligne`;
+      color = RED;
+      lines = [`${site} est toujours hors ligne${a.downSeconds != null ? ` depuis ${formatDuration(a.downSeconds)}` : ""}.`, a.reason ? `Cause constatée : ${a.reason}.` : "", "Tu reçois ce rappel toutes les 30 minutes parce que le mode vigilance est activé pour ce site."];
       break;
     case "up":
       subject = `Vigie SaaS : ${a.name} est de nouveau en ligne`;

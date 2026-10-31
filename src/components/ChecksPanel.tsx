@@ -28,12 +28,13 @@ export function ChecksPanel({ monitor: m, onNotice }: { monitor: Monitor; onNoti
   const [expectText, setExpectText] = useState(m.expectText ?? "");
   const [maxLatency, setMaxLatency] = useState(m.maxLatencyMs ? String(m.maxLatencyMs) : "");
   const [ssl, setSsl] = useState(https && m.sslCheck !== false);
+  const [vigilance, setVigilance] = useState(m.vigilance === true);
   const [saving, setSaving] = useState(false);
 
   const save = async () => {
     setSaving(true);
     try {
-      await api(`/api/monitors/${m.id}`, { method: "PATCH", body: { expectText, maxLatencyMs: maxLatency ? Number(maxLatency) : null, sslCheck: ssl } });
+      await api(`/api/monitors/${m.id}`, { method: "PATCH", body: { expectText, maxLatencyMs: maxLatency ? Number(maxLatency) : null, sslCheck: ssl, vigilance } });
       onNotice("Contrôles enregistrés. Ils s'appliquent dès le prochain contrôle (ou cliquez sur « Vérifier maintenant »).");
     } catch (e) {
       onNotice(e instanceof Error ? e.message : "Enregistrement impossible.");
@@ -100,6 +101,15 @@ export function ChecksPanel({ monitor: m, onNotice }: { monitor: Monitor; onNoti
           <label htmlFor="ssl" className="text-body-sm text-on-surface-variant">
             <span className="font-semibold text-on-surface">Surveiller le certificat SSL</span>
             <span className="block text-text-muted">Alerte à 14 jours puis à 3 jours de l&apos;expiration, et si le cadenas est invalide.</span>
+          </label>
+        </div>
+        <div className="flex items-start gap-3 sm:col-span-2">
+          <input id="vigilance" type="checkbox" className="mt-1 h-4 w-4 accent-primary-container" checked={vigilance} onChange={(e) => setVigilance(e.target.checked)} />
+          <label htmlFor="vigilance" className="text-body-sm text-on-surface-variant">
+            <span className="font-semibold text-on-surface">Mode vigilance</span>
+            <span className="block text-text-muted">
+              Pour un site critique : contrôle chaque minute (quand le déclencheur appelle Vigie chaque minute), et un e-mail de rappel toutes les 30 minutes tant que le site reste hors ligne. 5 sites au maximum.
+            </span>
           </label>
         </div>
       </div>

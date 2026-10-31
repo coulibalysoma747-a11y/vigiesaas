@@ -13,6 +13,8 @@ export type Monitor = {
   expectText?: string | null;
   maxLatencyMs?: number | null;
   sslCheck?: boolean;
+  /** Mode vigilance : contrôle chaque minute + rappel toutes les 30 minutes pendant une panne. */
+  vigilance?: boolean;
   lastStatus: boolean | null;
   lastCode?: number | null;
   lastError?: string | null;

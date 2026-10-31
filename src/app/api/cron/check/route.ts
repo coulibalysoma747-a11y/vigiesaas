@@ -3,7 +3,8 @@ import { NextResponse } from "next/server";
 import { mailer } from "@/lib/alerts";
 import { checkMonitor, makeRecipientResolver, type MonitorDoc } from "@/lib/check-monitor";
 import { adminDb } from "@/lib/firebase-admin";
-import { isDue, MAX_MONITORS_PER_USER, normalizeInterval } from "@/lib/monitoring";
+import { beatCron } from "@/lib/heartbeat";
+import { effectiveInterval, isDue, MAX_MONITORS_PER_USER } from "@/lib/monitoring";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -43,7 +44,7 @@ export async function GET(req: Request) {
     perUser.set(data.userId, count);
     if (count > MAX_MONITORS_PER_USER) continue; // au-delà de la limite, même si la base a été remplie à la main
     const last = data.lastCheckedAt?.toMillis?.() ?? null;
-    if (isDue(last, normalizeInterval(data.intervalMin), ctx.now.getTime())) due.push({ ref: d.ref, data });
+    if (isDue(last, effectiveInterval(data), ctx.now.getTime())) due.push({ ref: d.ref, data });
   }
 
   let down = 0;
@@ -62,5 +63,6 @@ export async function GET(req: Request) {
     }
   });
 
+  await beatCron(db, new Date()).catch((e) => console.error("battement non enregistré :", e instanceof Error ? e.message : e));
   return NextResponse.json({ monitors: snap.size, checked: due.length, down, changed, alerted, errors, ms: Date.now() - started });
 }

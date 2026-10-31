@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { FieldValue, Timestamp, type Firestore } from "firebase-admin/firestore";
 import { adminDb } from "@/lib/firebase-admin";
 import {
-  MAX_FEATURES_PER_USER, MAX_ROBOTS_PER_USER, buildFeatureList, normalizeExpectText, normalizeInterval, normalizeMaxLatency, normalizeRobotConfig,
+  MAX_FEATURES_PER_USER, MAX_ROBOTS_PER_USER, MAX_VIGILANCE_PER_USER, buildFeatureList, normalizeExpectText, normalizeInterval, normalizeMaxLatency, normalizeRobotConfig,
   type RobotConfigInput,
 } from "@/lib/monitoring";
 import { encryptSecret, vaultReady } from "@/lib/robot-crypto";
@@ -46,6 +46,14 @@ export async function PATCH(req: Request, ctx: Ctx) {
   if (body && "intervalMin" in body) update.intervalMin = normalizeInterval(body.intervalMin);
   if (typeof body?.name === "string" && body.name.trim()) update.name = body.name.trim().slice(0, 80);
   if (body && "expectText" in body) update.expectText = normalizeExpectText(body.expectText);
+  if (typeof body?.vigilance === "boolean") {
+    if (body.vigilance && mine.data.vigilance !== true) {
+      const others = await adminDb().collection("monitors").where("userId", "==", caller.uid).where("vigilance", "==", true).get();
+      if (others.docs.filter((d) => d.id !== id).length >= MAX_VIGILANCE_PER_USER) return fail(`Tu as atteint la limite de ${MAX_VIGILANCE_PER_USER} sites en mode vigilance.`, 409);
+    }
+    update.vigilance = body.vigilance;
+    update.lastReminderAt = null;
+  }
   if (typeof body?.autoCrawl === "boolean") {
     update.autoCrawl = body.autoCrawl;
     if (body.autoCrawl) update.crawlDiscoveredAt = null; // exploration au prochain passage

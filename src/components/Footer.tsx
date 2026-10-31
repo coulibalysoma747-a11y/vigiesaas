@@ -6,6 +6,8 @@ const LINKS = [
   { href: "/comment-ca-marche", label: "Comment ça marche" },
   { href: "/connexion", label: "Connexion" },
   { href: "/mentions", label: "Mentions légales" },
+  { href: "/confidentialite", label: "Confidentialité" },
+  { href: "/conditions", label: "Conditions" },
 ];
 
 export function Footer() {

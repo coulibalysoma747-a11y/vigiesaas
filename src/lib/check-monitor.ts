@@ -6,7 +6,7 @@ import { adminAuth } from "@/lib/firebase-admin";
 import { sendAlert, type AlertKind } from "@/lib/alerts";
 import {
   CRAWL_DEPTH, CRAWL_MAX_PAGES, CRAWL_MAX_PAGES_PER_USER, crawlDue, dayDelta, describeSlow, describeSsl, evalSlow, featureUrl, MAX_FEATURES_PER_MONITOR,
-  mergeDiscovered, normalizeExpectText, normalizeMaxLatency, pageStep, sslChange, sslDue, sslLevel, staleDayKeys, transition,
+  mergeDiscovered, normalizeExpectText, normalizeMaxLatency, pageStep, reminderDue, sslChange, sslDue, sslLevel, staleDayKeys, transition,
   type Days, type Feature, type SslLevel,
 } from "@/lib/monitoring";
 import { checkCertificate, crawlSite, probe, type ProbeResult } from "@/lib/safe-fetch";
@@ -20,6 +20,9 @@ export type MonitorDoc = {
   expectText?: string | null;
   maxLatencyMs?: number | null;
   sslCheck?: boolean;
+  /** Mode vigilance : contrôle chaque minute + rappels pendant une panne. */
+  vigilance?: boolean;
+  lastReminderAt?: Timestamp | null;
   lastStatus?: boolean | null;
   lastCheckedAt?: Timestamp | null;
   lastChangedAt?: Timestamp | null;
@@ -177,7 +180,15 @@ export async function checkMonitor(ref: DocumentReference, m: MonitorDoc, ctx: C
   if (change === "went_down" || change === "first_down") {
     update.openIncidentId = await openIncident("down", result.reason ?? "Pas de réponse");
     update.lastChangedAt = at;
+    update.lastReminderAt = at;
     notices.push({ kind: "down", reason: result.reason });
+  } else if (change === "none" && !result.up && m.vigilance === true && m.openIncidentId) {
+    // Mode vigilance : la panne continue, un rappel part toutes les 30 minutes.
+    const downSince = m.lastChangedAt?.toMillis?.() ?? null;
+    if (reminderDue((m.lastReminderAt ?? m.lastChangedAt)?.toMillis?.() ?? null, now.getTime())) {
+      update.lastReminderAt = at;
+      notices.push({ kind: "down_again", reason: result.reason, downSeconds: downSince === null ? null : Math.max(0, Math.round((now.getTime() - downSince) / 1000)) });
+    }
   } else if (change === "recovered") {
     const fromIncident = m.openIncidentId ? await closeIncident(m.openIncidentId) : null;
     const startedMs = m.lastChangedAt?.toMillis?.() ?? null;
