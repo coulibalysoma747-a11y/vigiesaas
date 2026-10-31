@@ -95,19 +95,30 @@ function classify(error: unknown): ProbeError {
   return "network";
 }
 
-async function probeOnce(url: string, expectText: string | null): Promise<ProbeResult> {
+export type ProbeOptions = {
+  expectText?: string | null;
+  /** Code HTTP exigé (ex. 401 pour une API protégée). Sans lui, toute réponse sous 400 est bonne. */
+  expectStatus?: number | null;
+  /** Une fonctionnalité est toujours contrôlée en GET (comme le ferait un visiteur). */
+  getOnly?: boolean;
+};
+
+async function probeOnce(url: string, options: ProbeOptions): Promise<ProbeResult> {
+  const expectText = options.expectText ?? null;
+  const expectStatus = options.expectStatus ?? null;
   const started = performance.now();
   const signal = AbortSignal.timeout(TIMEOUT_MS);
   try {
-    // Avec un texte attendu il faut lire la page : GET. Sinon HEAD suffit (sans lire le contenu), avec repli en GET si le serveur refuse HEAD.
-    let res = await request(url, expectText ? "GET" : "HEAD", signal);
-    if (!expectText && (res.status === 405 || res.status === 501 || res.status === 403)) {
+    // Avec un texte ou un code attendu il faut une vraie réponse : GET. Sinon HEAD suffit (sans lire le contenu), avec repli en GET si le serveur refuse HEAD.
+    const needGet = !!expectText || !!expectStatus || !!options.getOnly;
+    let res = await request(url, needGet ? "GET" : "HEAD", signal);
+    if (!needGet && (res.status === 405 || res.status === 501 || res.status === 403)) {
       void res.body?.cancel().catch(() => {});
       res = await request(url, "GET", signal);
     }
     const latencyMs = Math.round(performance.now() - started); // temps jusqu'à la réponse, avant la lecture de la page
-    let up = res.status < 400;
-    let reason: string | null = up ? null : describeFailure(res.status, null);
+    let up = expectStatus ? res.status === expectStatus : res.status < 400;
+    let reason: string | null = up ? null : expectStatus ? `Réponse HTTP ${res.status} (attendu : ${expectStatus})` : describeFailure(res.status, null);
     let contentOk: boolean | null = null;
     if (expectText && up) {
       contentOk = bodyHasText(await readText(res), expectText);
@@ -126,12 +137,26 @@ async function probeOnce(url: string, expectText: string | null): Promise<ProbeR
 }
 
 /** Contrôle un site. En cas d'échec, un second essai est fait 2,5 s plus tard : une micro-coupure ne déclenche pas d'alerte. */
-export async function probe(url: string, options: { expectText?: string | null } = {}): Promise<ProbeResult> {
-  const expectText = options.expectText ?? null;
-  const first = await probeOnce(url, expectText);
+export async function probe(url: string, options: ProbeOptions = {}): Promise<ProbeResult> {
+  const first = await probeOnce(url, options);
   if (first.up || first.error === "blocked") return first;
   await new Promise((resolve) => setTimeout(resolve, 2500));
-  return probeOnce(url, expectText);
+  return probeOnce(url, options);
+}
+
+/** Lit une page (1 Mo au plus), avec les mêmes protections que les contrôles : sert à proposer les pages d'un site. */
+export async function fetchText(url: string): Promise<{ text: string; finalUrl: string } | null> {
+  const signal = AbortSignal.timeout(TIMEOUT_MS);
+  try {
+    const res = await request(url, "GET", signal);
+    if (res.status >= 400) {
+      void res.body?.cancel().catch(() => {});
+      return null;
+    }
+    return { text: await readText(res), finalUrl: res.url || url };
+  } catch {
+    return null;
+  }
 }
 
 export type CertResult = { authorized: boolean; daysLeft: number | null; expiresAt: Date | null; error: string | null };

@@ -3,6 +3,8 @@ import type { Monitor } from "@/lib/types";
 /** Petits avertissements d'un site qui répond mais n'est pas parfait : lent, certificat SSL à renouveler, expiré ou invalide. */
 export function Warnings({ monitor: m }: { monitor: Monitor }) {
   const items: { text: string; bad: boolean }[] = [];
+  const down = (m.features ?? []).filter((f) => m.featureState?.[f.id]?.up === false);
+  if (down.length) items.push({ text: down.length === 1 ? `${down[0].name} en panne` : `${down.length} fonctionnalités en panne`, bad: true });
   if (m.isSlow) items.push({ text: "Lent", bad: false });
   if (m.sslCheck !== false) {
     if (m.sslLevel === "warn14") items.push({ text: `SSL : ${m.sslDaysLeft} j`, bad: false });

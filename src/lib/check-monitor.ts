@@ -5,8 +5,9 @@ import type { Resend } from "resend";
 import { adminAuth } from "@/lib/firebase-admin";
 import { sendAlert, type AlertKind } from "@/lib/alerts";
 import {
-  dayDelta, describeSlow, describeSsl, evalSlow, normalizeExpectText, normalizeMaxLatency, sslChange, sslDue, sslLevel, staleDayKeys, transition,
-  type Days, type SslLevel,
+  dayDelta, describeSlow, describeSsl, evalSlow, featureUrl, MAX_FEATURES_PER_MONITOR, normalizeExpectText, normalizeMaxLatency, sslChange, sslDue, sslLevel,
+  staleDayKeys, transition,
+  type Days, type Feature, type SslLevel,
 } from "@/lib/monitoring";
 import { checkCertificate, probe, type ProbeResult } from "@/lib/safe-fetch";
 
@@ -29,6 +30,10 @@ export type MonitorDoc = {
   sslLevel?: SslLevel | null;
   sslCheckedAt?: Timestamp | null;
   openSslIncidentId?: string | null;
+  /** Fonctionnalités du site (connexion, paiement…) : chacune est contrôlée à chaque passage. */
+  features?: Feature[];
+  featureState?: Record<string, { up?: boolean; incidentId?: string | null; changedAt?: Timestamp | null } | undefined>;
+  featuresDown?: number;
   days?: Days;
 };
 
@@ -68,19 +73,38 @@ export type CheckOutcome = {
   alerted: boolean;
   ssl: { level: SslLevel; daysLeft: number | null } | null;
   slow: boolean;
+  /** Nombre de fonctionnalités en panne (le site peut répondre alors qu'une fonction est cassée). */
+  featuresDown: number;
 };
 
-type IncidentKind = "down" | "slow" | "ssl";
-type Notice = { kind: AlertKind; reason?: string | null; downSeconds?: number | null; critical?: boolean };
+type IncidentKind = "down" | "slow" | "ssl" | "feature";
+type Notice = { kind: AlertKind; reason?: string | null; downSeconds?: number | null; critical?: boolean; featureName?: string; featurePath?: string };
+
+const FEATURE_CONCURRENCY = 4;
+
+/** Exécute `work` sur chaque élément, `size` à la fois, en gardant l'ordre des résultats. */
+async function mapPool<T, R>(items: T[], size: number, work: (item: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(size, items.length) }, async () => {
+      while (next < items.length) {
+        const i = next++;
+        out[i] = await work(items[i]);
+      }
+    }),
+  );
+  return out;
+}
 
 export async function checkMonitor(ref: DocumentReference, m: MonitorDoc, ctx: CheckContext, extra: Record<string, unknown> = {}): Promise<CheckOutcome> {
   const { db, now } = ctx;
   const at = Timestamp.fromDate(now);
   const notices: Notice[] = [];
 
-  const openIncident = async (kind: IncidentKind, reason: string): Promise<string> => {
+  const openIncident = async (kind: IncidentKind, reason: string, extra: Record<string, unknown> = {}): Promise<string> => {
     const incident = db.collection("incidents").doc();
-    await incident.set({ userId: m.userId, monitorId: ref.id, monitorName: m.name, url: m.url, kind, startedAt: at, resolvedAt: null, durationSec: null, reason });
+    await incident.set({ userId: m.userId, monitorId: ref.id, monitorName: m.name, url: m.url, kind, startedAt: at, resolvedAt: null, durationSec: null, reason, ...extra });
     return incident.id;
   };
   /** Ferme un incident et renvoie sa durée en secondes (null si elle est inconnue). */
@@ -171,6 +195,45 @@ export async function checkMonitor(ref: DocumentReference, m: MonitorDoc, ctx: C
     }
   }
 
+  // 4. Chaque fonctionnalité du site (connexion, paiement, API…) : une panne locale est détectée même si la page d'accueil répond.
+  const features = (Array.isArray(m.features) ? m.features : []).slice(0, MAX_FEATURES_PER_MONITOR);
+  let featuresDown = 0;
+  if (!features.length) {
+    update.featuresDown = 0;
+  } else if (result.error === null) {
+    // Site joignable : on contrôle les fonctionnalités. (Site injoignable : inutile, la panne générale est déjà signalée, et leur état est conservé.)
+    const probed = await mapPool(features, FEATURE_CONCURRENCY, async (f) => {
+      const target = featureUrl(m.url, f.path);
+      if (!target.ok) return { f, r: null };
+      return { f, r: await probe(target.url, { expectText: f.expectText, expectStatus: f.expectStatus, getOnly: true }) };
+    });
+    for (const { f, r } of probed) {
+      if (!r) continue;
+      const previous = m.featureState?.[f.id];
+      const step = transition(previous?.up ?? null, r.up);
+      const key = `featureState.${f.id}`;
+      update[`${key}.up`] = r.up;
+      update[`${key}.code`] = r.code;
+      update[`${key}.latencyMs`] = r.latencyMs;
+      update[`${key}.reason`] = r.reason;
+      update[`${key}.checkedAt`] = at;
+      if (!r.up) featuresDown += 1;
+      if (step === "went_down" || step === "first_down") {
+        update[`${key}.incidentId`] = await openIncident("feature", `${f.name} : ${r.reason ?? "ne répond plus"}`, { featureName: f.name, featurePath: f.path });
+        update[`${key}.changedAt`] = at;
+        notices.push({ kind: "feature_down", featureName: f.name, featurePath: f.path, reason: r.reason });
+      } else if (step === "recovered") {
+        const seconds = previous?.incidentId ? await closeIncident(previous.incidentId) : null;
+        update[`${key}.incidentId`] = null;
+        update[`${key}.changedAt`] = at;
+        notices.push({ kind: "feature_up", featureName: f.name, featurePath: f.path, downSeconds: seconds });
+      }
+    }
+    update.featuresDown = featuresDown;
+  } else {
+    featuresDown = m.featuresDown ?? 0;
+  }
+
   await ref.update(update);
 
   // Alertes : après l'enregistrement, et une alerte qui échoue ne casse jamais le contrôle.
@@ -192,5 +255,5 @@ export async function checkMonitor(ref: DocumentReference, m: MonitorDoc, ctx: C
       console.error("destinataire introuvable :", e instanceof Error ? e.message : e);
     }
   }
-  return { result, change: change === "none" ? "none" : change === "recovered" ? "up" : "down", alerted, ssl, slow: slow.isSlow };
+  return { result, change: change === "none" ? "none" : change === "recovered" ? "up" : "down", alerted, ssl, slow: slow.isSlow, featuresDown };
 }

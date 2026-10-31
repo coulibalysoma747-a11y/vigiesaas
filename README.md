@@ -4,6 +4,7 @@ Surveillance de sites par e-mail + brocante des projets SaaS abandonnés.
 
 ## Ce que fait l'application
 - **Mes sites** : chaque site est contrôlé automatiquement (5, 10, 30 ou 60 minutes au choix). Temps de réponse mesuré, disponibilité sur 30 jours, barres d'historique, pause / reprise, « Vérifier maintenant ».
+- **Fonctionnalités d'un site** (jusqu'à 8 par site, 40 par compte) : connexion, paiement, une API… Chaque fonctionnalité est une adresse du MÊME site, contrôlée à part (code de réponse attendu et texte attendu facultatifs). Si une seule tombe, le site passe en **« Partiel »**, un incident s'ouvre et l'alerte part, même si la page d'accueil répond. Un bouton « Détecter les pages du site » propose les pages importantes à partir des liens de l'accueil.
 - **Contrôles avancés** (facultatifs, site par site) :
   - **Contenu de la page** : un texte qui doit apparaître ; s'il manque (page vide, erreur), le site est déclaré hors ligne même s'il répond.
   - **Lenteur** : limite de 0,5 à 5 secondes ; alerte après 3 contrôles lents d'affilée, puis alerte de retour à la normale.

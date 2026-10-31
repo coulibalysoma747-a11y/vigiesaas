@@ -8,7 +8,7 @@ export function appUrl(): string {
   return (process.env.APP_URL || process.env.RENDER_EXTERNAL_URL || "").replace(/\/$/, "");
 }
 
-export type AlertKind = "down" | "up" | "slow" | "slow_ok" | "ssl" | "ssl_ok" | "test";
+export type AlertKind = "down" | "up" | "slow" | "slow_ok" | "ssl" | "ssl_ok" | "feature_down" | "feature_up" | "test";
 
 type AlertInput = {
   kind: AlertKind;
@@ -20,6 +20,9 @@ type AlertInput = {
   downSeconds?: number | null;
   /** Pour « ssl » : vrai si c'est grave (expiré ou invalide), faux s'il s'agit d'un simple avertissement. */
   critical?: boolean;
+  /** Pour « feature_down » et « feature_up » : la fonctionnalité concernée. */
+  featureName?: string;
+  featurePath?: string;
   at: Date;
 };
 
@@ -85,6 +88,28 @@ export function buildAlert(input: AlertInput): { subject: string; text: string; 
       color = a.critical ? RED : ORANGE;
       lines = [`${site} : ${a.reason ?? "problème de certificat SSL"}.`, "Un certificat expiré ou invalide affiche un avertissement de sécurité à tous tes visiteurs. Renouvelle-le chez ton hébergeur."];
       break;
+    case "feature_down": {
+      const feature = (a.featureName ?? "Une fonctionnalité").replace(/[\u0000-\u001f\u007f]+/g, " ").trim();
+      subject = `Vigie SaaS : ${feature} est en panne sur ${a.name}`;
+      eyebrow = "Fonctionnalité en panne";
+      title = `${feature} ne fonctionne plus sur ${a.name}`;
+      color = RED;
+      lines = [
+        `${site} : la fonctionnalité « ${feature} »${a.featurePath ? ` (${a.featurePath})` : ""} ne fonctionne plus.`,
+        a.reason ? `Cause constatée : ${a.reason}.` : "",
+        "Le reste du site peut continuer à répondre : sans cette alerte, la panne passerait inaperçue.",
+      ];
+      break;
+    }
+    case "feature_up": {
+      const feature = (a.featureName ?? "Une fonctionnalité").replace(/[\u0000-\u001f\u007f]+/g, " ").trim();
+      subject = `Vigie SaaS : ${feature} refonctionne sur ${a.name}`;
+      eyebrow = "Fonctionnalité rétablie";
+      title = `${feature} refonctionne sur ${a.name}`;
+      color = GREEN;
+      lines = [`${site} : la fonctionnalité « ${feature} » est de nouveau opérationnelle.`, a.downSeconds != null ? `Durée de la panne : ${formatDuration(a.downSeconds)}.` : ""];
+      break;
+    }
     case "ssl_ok":
       subject = `Vigie SaaS : certificat SSL de ${a.name} en règle`;
       eyebrow = "Certificat SSL en règle";

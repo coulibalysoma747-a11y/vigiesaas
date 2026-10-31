@@ -1,4 +1,4 @@
-import type { Days, SslLevel } from "@/lib/monitoring";
+import type { Days, Feature, SslLevel } from "@/lib/monitoring";
 
 type Stamp = { toDate: () => Date } | null | undefined;
 
@@ -24,10 +24,13 @@ export type Monitor = {
   sslLevel?: SslLevel | null;
   sslDaysLeft?: number | null;
   sslExpiresAt?: Stamp;
+  features?: Feature[];
+  featureState?: Record<string, { up?: boolean; code?: number | null; latencyMs?: number | null; reason?: string | null; checkedAt?: Stamp; changedAt?: Stamp } | undefined>;
+  featuresDown?: number;
   days?: Days;
 };
 
-export type IncidentKind = "down" | "slow" | "ssl";
+export type IncidentKind = "down" | "slow" | "ssl" | "feature";
 
 export type Incident = {
   id: string;
@@ -42,6 +45,6 @@ export type Incident = {
   reason?: string;
 };
 
-export const INCIDENT_LABEL: Record<IncidentKind, string> = { down: "Panne", slow: "Lenteur", ssl: "Certificat SSL" };
+export const INCIDENT_LABEL: Record<IncidentKind, string> = { down: "Panne", slow: "Lenteur", ssl: "Certificat SSL", feature: "Fonctionnalité" };
 
 export const dateOf = (s: Stamp): Date | undefined => s?.toDate?.();

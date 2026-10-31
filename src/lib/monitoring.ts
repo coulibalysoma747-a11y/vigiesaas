@@ -249,6 +249,145 @@ export function describeSsl(level: SslLevel, daysLeft: number | null): string {
   return `Le certificat SSL expire dans ${n} jour${n > 1 ? "s" : ""}`;
 }
 
+// ───── Fonctionnalités : plusieurs pages ou points d'accès d'un MÊME site (connexion, paiement, API…) ─────
+
+export const MAX_FEATURES_PER_MONITOR = 8;
+export const MAX_FEATURES_PER_USER = 40;
+export const FEATURE_NAME_MAX = 40;
+
+export type Feature = { id: string; name: string; path: string; expectStatus: number | null; expectText: string | null };
+export type FeatureInput = { id?: unknown; name?: unknown; path?: unknown; expectStatus?: unknown; expectText?: unknown };
+
+/** Code HTTP attendu (100 à 599), ou null : par défaut, toute réponse sous 400 est bonne. */
+export function normalizeExpectStatus(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") return null;
+  const n = Number(value);
+  return Number.isInteger(n) && n >= 100 && n <= 599 ? n : null;
+}
+
+export type FeatureUrl = { ok: true; path: string; url: string } | { ok: false; error: string };
+
+/** Adresse d'une fonctionnalité : TOUJOURS sur le même site que le site surveillé (jamais un autre domaine, jamais « //autre.com »). */
+export function featureUrl(baseUrl: string, raw: string): FeatureUrl {
+  const value = (raw ?? "").trim();
+  if (!value) return { ok: false, error: "Saisis l'adresse de la fonctionnalité (ex. /connexion)." };
+  if (value.length > 300 || /[\s\\\u0000-\u001f\u007f]/.test(value)) return { ok: false, error: "Adresse invalide." };
+  let base: URL;
+  try {
+    base = new URL(baseUrl);
+  } catch {
+    return { ok: false, error: "Site invalide." };
+  }
+  let target: URL;
+  try {
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) target = new URL(value);
+    else if (value.startsWith("//")) return { ok: false, error: "L'adresse doit rester sur le même site que le site surveillé." };
+    else if (!value.startsWith("/") && /^[a-z][a-z0-9+.-]*:/i.test(value)) return { ok: false, error: "Adresse invalide : commence par « / » (ex. /connexion)." }; // « javascript:… », « mailto:… »
+    else target = new URL(value.startsWith("/") ? value : `/${value}`, base.origin);
+  } catch {
+    return { ok: false, error: "Adresse invalide." };
+  }
+  if (target.origin !== base.origin) return { ok: false, error: "L'adresse doit rester sur le même site que le site surveillé." };
+  const path = target.pathname + target.search;
+  if (path.length > 300) return { ok: false, error: "Adresse trop longue." };
+  return { ok: true, path, url: target.href };
+}
+
+/** « /api/health-check » devient « Health check » ; « / » devient « Accueil ». */
+export function nameFromPath(path: string): string {
+  const last = path.split("?")[0].split("/").filter(Boolean).pop();
+  if (!last) return "Accueil";
+  let text = last;
+  try {
+    text = decodeURIComponent(last);
+  } catch {
+    // on garde le texte tel quel
+  }
+  const words = text.replace(/[-_.]+/g, " ").trim();
+  return (words.charAt(0).toUpperCase() + words.slice(1)).slice(0, FEATURE_NAME_MAX) || "Page";
+}
+
+export function normalizeFeature(baseUrl: string, input: FeatureInput): { ok: true; feature: Omit<Feature, "id"> } | { ok: false; error: string } {
+  const u = featureUrl(baseUrl, String(input.path ?? ""));
+  if (!u.ok) return u;
+  const name = String(input.name ?? "").replace(/\s+/g, " ").trim().slice(0, FEATURE_NAME_MAX) || nameFromPath(u.path);
+  return { ok: true, feature: { name, path: u.path, expectStatus: normalizeExpectStatus(input.expectStatus), expectText: normalizeExpectText(input.expectText) } };
+}
+
+/**
+ * Liste de fonctionnalités à enregistrer : chaque entrée validée, doublons d'adresse retirés, 8 au plus.
+ * Une entrée garde son identifiant s'il existe déjà (pour conserver son historique), sinon `makeId()` en crée un.
+ */
+export function buildFeatureList(baseUrl: string, raw: unknown, existingIds: ReadonlySet<string>, makeId: () => string): { ok: true; features: Feature[] } | { ok: false; error: string } {
+  const list = Array.isArray(raw) ? raw : [];
+  if (list.length > MAX_FEATURES_PER_MONITOR) return { ok: false, error: `Au plus ${MAX_FEATURES_PER_MONITOR} fonctionnalités par site.` };
+  const features: Feature[] = [];
+  const paths = new Set<string>();
+  const used = new Set<string>();
+  for (const entry of list) {
+    const input = (entry ?? {}) as FeatureInput;
+    const parsed = normalizeFeature(baseUrl, input);
+    if (!parsed.ok) return { ok: false, error: `${String(input.name ?? input.path ?? "Fonctionnalité").slice(0, 40)} : ${parsed.error}` };
+    if (paths.has(parsed.feature.path)) continue;
+    paths.add(parsed.feature.path);
+    // Un identifiant déjà connu (et pas encore utilisé dans cette liste) est conservé ; sinon on en crée un tout neuf.
+    let id = typeof input.id === "string" && existingIds.has(input.id) && !used.has(input.id) ? input.id : "";
+    if (!id) {
+      do id = makeId();
+      while (used.has(id) || existingIds.has(id));
+    }
+    used.add(id);
+    features.push({ id, ...parsed.feature });
+  }
+  return { ok: true, features };
+}
+
+export type Health = "up" | "degraded" | "down";
+
+/** Santé d'un site : hors ligne, « partiel » (il répond mais une fonctionnalité est en panne), ou en ligne. null = pas encore contrôlé. */
+export function siteHealth(mainUp: boolean | null | undefined, featuresDown: number | null | undefined): Health | null {
+  if (mainUp === null || mainUp === undefined) return null;
+  if (!mainUp) return "down";
+  return (featuresDown ?? 0) > 0 ? "degraded" : "up";
+}
+
+const ASSET = /\.(png|jpe?g|gif|svg|webp|ico|css|js|mjs|json|xml|pdf|zip|mp4|mp3|woff2?|ttf|map|txt)$/i;
+const KEY_WORDS = ["connexion", "login", "signin", "inscription", "signup", "register", "panier", "cart", "checkout", "paiement", "payment", "pay", "commande", "order", "compte", "account", "dashboard", "tableau", "api", "health", "boutique", "shop", "tarif", "pricing", "contact"];
+
+/** Pages à proposer à partir du code de la page d'accueil : liens du MÊME site, sans fichiers, les plus importantes (connexion, paiement…) d'abord. */
+export function extractLinks(html: string, pageUrl: string, max = 12): { name: string; path: string }[] {
+  let page: URL;
+  try {
+    page = new URL(pageUrl);
+  } catch {
+    return [];
+  }
+  const re = /<a\s[^>]*?href\s*=\s*(?:"([^"]*)"|'([^']*)')[^>]*>([\s\S]*?)<\/a>/gi;
+  const seen = new Set<string>();
+  const found: { name: string; path: string; score: number }[] = [];
+  let match: RegExpExecArray | null;
+  let guard = 0;
+  while ((match = re.exec(html)) && guard++ < 3000) {
+    const href = (match[1] ?? match[2] ?? "").trim();
+    if (!href || href.startsWith("#") || /^(mailto|tel|javascript|data):/i.test(href)) continue;
+    let target: URL;
+    try {
+      target = new URL(href, page);
+    } catch {
+      continue;
+    }
+    if (target.origin !== page.origin) continue;
+    const path = target.pathname + target.search;
+    if (path === "/" || path.length > 200 || ASSET.test(target.pathname) || seen.has(path)) continue;
+    seen.add(path);
+    const text = match[3].replace(/<[^>]*>/g, " ").replace(/&nbsp;|&amp;|&#\d+;/gi, " ").replace(/\s+/g, " ").trim().slice(0, FEATURE_NAME_MAX);
+    const haystack = `${path} ${text}`.toLowerCase();
+    found.push({ name: text || nameFromPath(path), path, score: KEY_WORDS.some((k) => haystack.includes(k)) ? 1 : 0 });
+  }
+  found.sort((a, b) => b.score - a.score || a.path.length - b.path.length);
+  return found.slice(0, max).map(({ name, path }) => ({ name, path }));
+}
+
 /** « https://www.exemple.com/page » devient « exemple.com ». */
 export function shortHost(raw: string): string {
   const parsed = parseMonitorUrl(raw);

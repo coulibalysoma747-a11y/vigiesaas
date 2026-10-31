@@ -26,6 +26,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     reason: out.result.reason,
     contentOk: out.result.contentOk,
     slow: out.slow,
+    featuresDown: out.featuresDown,
     sslLevel: out.ssl?.level ?? null,
     sslDaysLeft: out.ssl?.daysLeft ?? null,
   });

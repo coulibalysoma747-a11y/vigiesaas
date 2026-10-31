@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  buildFeatureList, extractLinks, featureUrl, nameFromPath, normalizeExpectStatus, normalizeFeature, siteHealth,
   bodyHasText, dayDelta, dayKey, dayState, daysUntil, describeFailure, describeSlow, describeSsl, evalSlow, formatDuration, formatPct, isDue,
   isPrivateAddress, lastDayKeys, normalizeExpectText, normalizeInterval, normalizeMaxLatency, parseMonitorUrl, shortHost, sslChange, sslDue,
   sslLevel, staleDayKeys, summarize, transition,
@@ -192,4 +193,81 @@ test("certificat SSL : niveaux, alertes seulement quand ça empire ou que c'est 
   assert.equal(describeSsl("expired", -2), "Le certificat SSL a expiré");
   assert.match(describeSsl("invalid", null), /invalide/);
   assert.equal(describeSsl("ok", 60), "Certificat SSL valide (expire dans 60 jours)");
+});
+
+const BASE = "https://mon-saas.com/accueil";
+
+test("fonctionnalité : l'adresse reste TOUJOURS sur le même site (jamais un autre domaine ni « //autre.com »)", () => {
+  const ok = featureUrl(BASE, "/connexion");
+  assert.ok(ok.ok && ok.path === "/connexion" && ok.url === "https://mon-saas.com/connexion");
+  assert.ok(featureUrl(BASE, "api/health?x=1").ok && (featureUrl(BASE, "api/health?x=1") as { path: string }).path === "/api/health?x=1");
+  assert.ok(featureUrl(BASE, "https://mon-saas.com/paiement").ok);
+  for (const bad of ["", "   ", "//evil.com/x", "https://evil.com/x", "http://mon-saas.com/x", "https://mon-saas.com.evil.com/x", "https://sous.mon-saas.com/x", "/a b", "/a\b", "\\evil.com", "javascript:alert(1)", "/" + "x".repeat(400)]) {
+    assert.equal(featureUrl(BASE, bad).ok, false, bad);
+  }
+  assert.equal(featureUrl("pas une adresse", "/x").ok, false);
+  assert.equal(normalizeExpectStatus(200), 200);
+  assert.equal(normalizeExpectStatus("401"), 401);
+  assert.equal(normalizeExpectStatus(99), null);
+  assert.equal(normalizeExpectStatus(600), null);
+  assert.equal(normalizeExpectStatus(""), null);
+  assert.equal(normalizeExpectStatus(2.5), null);
+});
+
+test("fonctionnalité : nom proposé à partir de l'adresse, texte et code attendus nettoyés", () => {
+  assert.equal(nameFromPath("/connexion"), "Connexion");
+  assert.equal(nameFromPath("/api/health-check"), "Health check");
+  assert.equal(nameFromPath("/"), "Accueil");
+  assert.equal(nameFromPath("/panier?x=1"), "Panier");
+  assert.equal(nameFromPath("/%E0%A4%A"), "%E0%A4%A"); // texte mal encodé : gardé tel quel, sans planter
+  const f = normalizeFeature(BASE, { name: "  Paiement   Mobile ", path: "paiement", expectStatus: "200", expectText: "  Payer  " });
+  assert.deepEqual(f, { ok: true, feature: { name: "Paiement Mobile", path: "/paiement", expectStatus: 200, expectText: "Payer" } });
+  assert.deepEqual(normalizeFeature(BASE, { path: "/api/sante" }), { ok: true, feature: { name: "Sante", path: "/api/sante", expectStatus: null, expectText: null } });
+  assert.equal(normalizeFeature(BASE, { path: "https://evil.com" }).ok, false);
+});
+
+test("liste de fonctionnalités : doublons retirés, identifiants conservés, 8 au plus", () => {
+  let n = 0;
+  const makeId = () => `id${++n}`;
+  const r = buildFeatureList(BASE, [{ id: "abc", path: "/a" }, { path: "/b" }, { path: "/a" }, { id: "abc", path: "/c" }], new Set(["abc"]), makeId);
+  assert.ok(r.ok);
+  if (r.ok) {
+    assert.deepEqual(r.features.map((f) => f.path), ["/a", "/b", "/c"]);
+    assert.equal(r.features[0].id, "abc"); // conservé
+    assert.notEqual(r.features[2].id, "abc"); // doublon d'identifiant : nouvel identifiant
+    assert.equal(new Set(r.features.map((f) => f.id)).size, 3);
+  }
+  assert.ok(buildFeatureList(BASE, [], new Set(), makeId).ok);
+  assert.ok(buildFeatureList(BASE, "pas une liste", new Set(), makeId).ok);
+  const nine = Array.from({ length: 9 }, (_, i) => ({ path: `/p${i}` }));
+  assert.equal(buildFeatureList(BASE, nine, new Set(), makeId).ok, false);
+  const bad = buildFeatureList(BASE, [{ name: "Pirate", path: "https://evil.com/x" }], new Set(), makeId);
+  assert.ok(!bad.ok && bad.error.startsWith("Pirate :"));
+});
+
+test("santé d'un site : hors ligne, partiel (répond mais une fonctionnalité est en panne), en ligne", () => {
+  assert.equal(siteHealth(null, 0), null);
+  assert.equal(siteHealth(undefined, 2), null);
+  assert.equal(siteHealth(false, 0), "down");
+  assert.equal(siteHealth(false, 3), "down");
+  assert.equal(siteHealth(true, 0), "up");
+  assert.equal(siteHealth(true, undefined), "up");
+  assert.equal(siteHealth(true, 1), "degraded");
+});
+
+test("détection des pages : liens du même site seulement, sans fichiers, connexion et paiement d'abord", () => {
+  const html = `
+    <nav><a href="/blog">Blog</a> <a href="/connexion"><span>Se connecter</span></a> <a class="x" href='/paiement?plan=pro'>Payer</a>
+    <a href="https://evil.com/phish">Offre</a> <a href="//cdn.evil.com/x">CDN</a> <a href="mailto:a@b.com">Écrire</a> <a href="javascript:alert(1)">Pirate</a>
+    <a href="/logo.png">Logo</a> <a href="/style.css">CSS</a> <a href="#haut">Haut</a> <a href="/">Accueil</a> <a href="/connexion">Doublon</a>
+    <a href="/a-propos">À propos</a> <a href="https://mon-saas.com/api/health">Santé</a> <a href="https://autre.mon-saas.com/x">Sous-domaine</a></nav>`;
+  const links = extractLinks(html, "https://mon-saas.com/");
+  const paths = links.map((l) => l.path);
+  assert.deepEqual(paths.slice(0, 3).sort(), ["/api/health", "/connexion", "/paiement?plan=pro"]); // les pages importantes d'abord
+  assert.ok(paths.includes("/blog") && paths.includes("/a-propos"));
+  for (const forbidden of ["/", "/logo.png", "/style.css", "/phish", "/x"]) assert.ok(!paths.includes(forbidden), forbidden);
+  assert.equal(paths.filter((p) => p === "/connexion").length, 1);
+  assert.equal(links.find((l) => l.path === "/connexion")?.name, "Se connecter");
+  assert.equal(extractLinks(html, "pas une adresse").length, 0);
+  assert.equal(extractLinks(html, "https://mon-saas.com/", 2).length, 2);
 });

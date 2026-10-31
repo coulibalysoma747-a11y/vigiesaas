@@ -58,12 +58,13 @@ export default function Dashboard() {
     setError("");
     setAdding(true);
     try {
-      await api("/api/monitors", { method: "POST", body: { url, name, expectText, maxLatencyMs: maxLatency ? Number(maxLatency) : null, sslCheck } });
+      const created = await api<{ id: string }>("/api/monitors", { method: "POST", body: { url, name, expectText, maxLatencyMs: maxLatency ? Number(maxLatency) : null, sslCheck } });
       setUrl("");
       setName("");
       setExpectText("");
       setMaxLatency("");
       setSslCheck(true);
+      router.push(`/tableau-de-bord/${created.id}`); // page du site : on peut y ajouter ses fonctionnalités (connexion, paiement…)
     } catch (err) {
       setError(err instanceof Error ? err.message : "Ajout impossible.");
     } finally {
@@ -73,8 +74,9 @@ export default function Dashboard() {
 
   const list = useMemo(() => [...(monitors ?? [])].sort((a, b) => (dateOf(b.lastChangedAt)?.getTime() ?? 0) - (dateOf(a.lastChangedAt)?.getTime() ?? 0) || a.name.localeCompare(b.name, "fr")), [monitors]);
   const active = list.filter((m) => m.isActive !== false);
-  const online = active.filter((m) => m.lastStatus === true).length;
-  const offline = active.filter((m) => m.lastStatus === false).length;
+  const partial = (m: Monitor) => m.lastStatus === true && (m.featuresDown ?? 0) > 0; // répond, mais une fonctionnalité est en panne
+  const online = active.filter((m) => m.lastStatus === true && !partial(m)).length;
+  const problems = active.filter((m) => m.lastStatus === false || partial(m)).length;
   const overall = useMemo(() => {
     let checks = 0;
     let weighted = 0;
@@ -108,7 +110,7 @@ export default function Dashboard() {
         {[
           { label: "Surveillés", value: String(active.length), tone: "text-on-surface" },
           { label: "En ligne", value: String(online), tone: "text-status-up" },
-          { label: "Hors ligne", value: String(offline), tone: offline > 0 ? "text-status-down" : "text-text-muted" },
+          { label: "Avec un problème", value: String(problems), tone: problems > 0 ? "text-status-down" : "text-text-muted" },
           { label: "Disponibilité 30 j", value: formatPct(overall), tone: "text-on-surface" },
         ].map((s) => (
           <div key={s.label} className="card px-4 py-5">
@@ -152,7 +154,7 @@ export default function Dashboard() {
           </div>
         </details>
         {error && <p role="alert" className="mt-3 rounded-lg bg-status-down/10 px-3 py-2 text-body-sm text-error">{error}</p>}
-        <p className="mt-3 text-label-md text-text-muted">{list.length} / {MAX_MONITORS_PER_USER} sites · contrôle toutes les 5 minutes par défaut (modifiable pour chaque site).</p>
+        <p className="mt-3 text-label-md text-text-muted">{list.length} / {MAX_MONITORS_PER_USER} sites · contrôle toutes les 5 minutes par défaut. Après l&apos;ajout, tu pourras surveiller chaque <strong>fonctionnalité</strong> du site (connexion, paiement…) à part.</p>
       </form>
 
       <div className="mt-6">
@@ -171,7 +173,7 @@ export default function Dashboard() {
               return (
                 <li key={m.id}>
                   <Link href={`/tableau-de-bord/${m.id}`} className="flex flex-wrap items-center gap-x-4 gap-y-3 px-4 py-4 transition-colors hover:bg-surface-subtle sm:px-5">
-                    <StatusDot status={paused ? null : m.lastStatus} />
+                    <StatusDot status={paused ? null : m.lastStatus} degraded={(m.featuresDown ?? 0) > 0} />
                     <div className="min-w-0 flex-1 basis-44">
                       <p className="truncate font-semibold text-on-surface">{m.name}</p>
                       <p className="truncate text-body-sm text-text-muted">{shortHost(m.url)}</p>
@@ -186,7 +188,7 @@ export default function Dashboard() {
                     {paused ? (
                       <span className="inline-flex items-center rounded-full bg-surface-container px-2.5 py-1 text-label-sm font-bold text-text-muted">En pause</span>
                     ) : (
-                      <StatusPill status={m.lastStatus} />
+                      <StatusPill status={m.lastStatus} degraded={(m.featuresDown ?? 0) > 0} />
                     )}
                     <Icon name="arrow-right" size={16} className="hidden text-text-muted sm:block" />
                   </Link>
