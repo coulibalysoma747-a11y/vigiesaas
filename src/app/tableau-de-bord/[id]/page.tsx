@@ -4,14 +4,15 @@ import { useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { collection, doc, onSnapshot, query, where } from "firebase/firestore";
 import { useAuth } from "@/components/AuthProvider";
+import { ChecksPanel } from "@/components/ChecksPanel";
 import { Icon } from "@/components/Icon";
 import { StatusPill } from "@/components/StatusDot";
 import { UptimeRibbon } from "@/components/UptimeRibbon";
 import { api } from "@/lib/api-client";
 import { db } from "@/lib/firebase";
-import { INTERVALS, describeFailure, formatDuration, formatPct, summarize, type ProbeError } from "@/lib/monitoring";
+import { INTERVALS, describeFailure, describeSsl, formatDuration, formatPct, summarize, type ProbeError, type SslLevel } from "@/lib/monitoring";
 import { ago } from "@/lib/safe-url";
-import { dateOf, type Incident, type Monitor } from "@/lib/types";
+import { INCIDENT_LABEL, dateOf, type Incident, type Monitor } from "@/lib/types";
 
 export default function MonitorDetail() {
   const { id } = useParams<{ id: string }>();
@@ -118,8 +119,9 @@ export default function MonitorDetail() {
             className="btn-primary"
             disabled={!!busy || paused}
             onClick={() => run("check", async () => {
-              const r = await api<{ up: boolean; code: number | null; latencyMs: number | null; reason: string | null }>(`/api/monitors/${id}/check`, { method: "POST" });
-              return r.up ? `En ligne : ${r.latencyMs} ms.` : `Hors ligne : ${r.reason ?? "pas de réponse"}.`;
+              const r = await api<{ up: boolean; latencyMs: number | null; reason: string | null; slow: boolean; sslLevel: SslLevel | null; sslDaysLeft: number | null }>(`/api/monitors/${id}/check`, { method: "POST" });
+              const extras = [r.up && r.slow ? "Site lent." : "", r.sslLevel ? `${describeSsl(r.sslLevel, r.sslDaysLeft)}.` : ""].filter(Boolean).join(" ");
+              return `${r.up ? `En ligne : ${r.latencyMs} ms.` : `Hors ligne : ${r.reason ?? "pas de réponse"}.`} ${extras}`.trim();
             })}
           >
             <Icon name="refresh" size={16} />
@@ -153,6 +155,8 @@ export default function MonitorDetail() {
         {notice && <p role="status" className="mt-3 text-body-sm font-medium text-primary">{notice}</p>}
       </div>
 
+      <ChecksPanel key={monitor.id} monitor={monitor} onNotice={setNotice} />
+
       <h2 className="mt-10 font-head text-headline-sm font-bold text-on-surface">Incidents</h2>
       {sorted.length === 0 ? (
         <p className="mt-3 rounded-xl bg-surface-container-lowest px-5 py-8 text-center text-body-sm text-text-muted shadow-sm">Aucun incident enregistré pour ce site.</p>
@@ -164,7 +168,7 @@ export default function MonitorDetail() {
             return (
               <li key={i.id} className="flex flex-wrap items-center justify-between gap-2 px-4 py-3.5 sm:px-5">
                 <div>
-                  <p className="text-body-sm font-semibold text-on-surface">{i.reason ?? "Panne"}</p>
+                  <p className="text-body-sm font-semibold text-on-surface"><span className="mr-2 rounded-md bg-surface-container px-1.5 py-0.5 text-label-sm font-bold text-on-surface-variant">{INCIDENT_LABEL[i.kind ?? "down"]}</span>{i.reason ?? "Panne"}</p>
                   <p className="text-label-md text-text-muted">{start ? start.toLocaleString("fr-FR", { dateStyle: "medium", timeStyle: "short" }) : ""}</p>
                 </div>
                 <span className={`rounded-full px-2.5 py-1 text-label-sm font-bold ${open ? "bg-status-down/10 text-status-down" : "bg-secondary-fixed/30 text-secondary"}`}>

@@ -8,48 +8,108 @@ export function appUrl(): string {
   return (process.env.APP_URL || process.env.RENDER_EXTERNAL_URL || "").replace(/\/$/, "");
 }
 
+export type AlertKind = "down" | "up" | "slow" | "slow_ok" | "ssl" | "ssl_ok" | "test";
+
 type AlertInput = {
-  kind: "down" | "up" | "test";
+  kind: AlertKind;
   name: string;
   url: string;
   monitorId?: string;
+  /** Cause (panne), ou détail (lenteur, certificat). */
   reason?: string | null;
   downSeconds?: number | null;
+  /** Pour « ssl » : vrai si c'est grave (expiré ou invalide), faux s'il s'agit d'un simple avertissement. */
+  critical?: boolean;
   at: Date;
 };
 
 const when = (d: Date) => d.toLocaleString("fr-FR", { dateStyle: "long", timeStyle: "short", timeZone: "UTC" }) + " (UTC)";
 
+const RED = "#ef4444";
+const ORANGE = "#f59e0b";
+const GREEN = "#10b981";
+const INDIGO = "#4f46e5";
+
 export function buildAlert(input: AlertInput): { subject: string; text: string; html: string } {
   // Le nom est saisi par l'utilisateur : retours à la ligne et caractères de contrôle retirés (sujet de l'e-mail).
   const a = { ...input, name: input.name.replace(/[\u0000-\u001f\u007f]+/g, " ").trim() };
   const link = appUrl() ? `${appUrl()}${a.monitorId ? `/tableau-de-bord/${a.monitorId}` : "/tableau-de-bord"}` : "";
-  const down = a.kind === "down";
-  const test = a.kind === "test";
-  const title = test ? "E-mail de test" : down ? `${a.name} est hors ligne` : `${a.name} est de nouveau en ligne`;
-  const lines = test
-    ? ["Tout fonctionne : tu recevras ce type de message quand un de tes sites tombe, puis quand il revient en ligne."]
-    : [
-        `Ton site ${a.name} (${a.url}) est ${down ? "hors ligne" : "de nouveau en ligne"}.`,
-        down && a.reason ? `Cause constatée : ${a.reason}.` : "",
-        !down && a.downSeconds != null ? `Durée de l'interruption : ${formatDuration(a.downSeconds)}.` : "",
-        `Constaté le ${when(a.at)}.`,
-      ].filter(Boolean);
-  const color = test ? "#4f46e5" : down ? "#ef4444" : "#10b981";
+  const site = `Ton site ${a.name} (${a.url})`;
+
+  let subject: string;
+  let eyebrow: string;
+  let title: string;
+  let color: string;
+  let lines: string[];
+
+  switch (a.kind) {
+    case "test":
+      subject = "Vigie SaaS : e-mail de test";
+      eyebrow = "Test";
+      title = "E-mail de test";
+      color = INDIGO;
+      lines = ["Tout fonctionne : tu recevras ce type de message quand un de tes sites tombe, devient lent, ou quand son certificat SSL approche de l'expiration."];
+      break;
+    case "down":
+      subject = `Vigie SaaS : ${a.name} est hors ligne`;
+      eyebrow = "Panne détectée";
+      title = `${a.name} est hors ligne`;
+      color = RED;
+      lines = [`${site} est hors ligne.`, a.reason ? `Cause constatée : ${a.reason}.` : ""];
+      break;
+    case "up":
+      subject = `Vigie SaaS : ${a.name} est de nouveau en ligne`;
+      eyebrow = "Retour en ligne";
+      title = `${a.name} est de nouveau en ligne`;
+      color = GREEN;
+      lines = [`${site} est de nouveau en ligne.`, a.downSeconds != null ? `Durée de l'interruption : ${formatDuration(a.downSeconds)}.` : ""];
+      break;
+    case "slow":
+      subject = `Vigie SaaS : ${a.name} est lent`;
+      eyebrow = "Site lent";
+      title = `${a.name} est lent`;
+      color = ORANGE;
+      lines = [`${site} répond plus lentement que la limite que tu as fixée.`, a.reason ? `${a.reason}.` : "", "Il a dépassé cette limite plusieurs contrôles de suite."];
+      break;
+    case "slow_ok":
+      subject = `Vigie SaaS : ${a.name} retrouve une vitesse normale`;
+      eyebrow = "Vitesse normale";
+      title = `${a.name} retrouve une vitesse normale`;
+      color = GREEN;
+      lines = [`${site} répond de nouveau sous ta limite de lenteur.`, a.downSeconds != null ? `Durée de la lenteur : ${formatDuration(a.downSeconds)}.` : ""];
+      break;
+    case "ssl":
+      subject = `Vigie SaaS : certificat SSL de ${a.name}`;
+      eyebrow = a.critical ? "Certificat SSL : urgent" : "Certificat SSL : à renouveler";
+      title = a.reason ?? "Problème de certificat SSL";
+      color = a.critical ? RED : ORANGE;
+      lines = [`${site} : ${a.reason ?? "problème de certificat SSL"}.`, "Un certificat expiré ou invalide affiche un avertissement de sécurité à tous tes visiteurs. Renouvelle-le chez ton hébergeur."];
+      break;
+    case "ssl_ok":
+      subject = `Vigie SaaS : certificat SSL de ${a.name} en règle`;
+      eyebrow = "Certificat SSL en règle";
+      title = `Le certificat SSL de ${a.name} est de nouveau en règle`;
+      color = GREEN;
+      lines = [`${site} : le certificat SSL est valide.`, a.reason ? `${a.reason}.` : ""];
+      break;
+  }
+  lines = lines.filter(Boolean);
+  lines.push(`Constaté le ${when(a.at)}.`);
+
   const text = `${lines.join("\n")}${link ? `\n\nVoir le détail : ${link}` : ""}\n\n— Vigie SaaS`;
   const html = `<!doctype html><html lang="fr"><body style="margin:0;background:#faf8ff;font-family:Inter,Arial,sans-serif;color:#131b2e">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:24px 12px">
 <table role="presentation" width="100%" style="max-width:520px;background:#ffffff;border-radius:12px;box-shadow:0 1px 8px rgba(0,0,0,.06)" cellpadding="0" cellspacing="0">
 <tr><td style="height:6px;background:${color};border-radius:12px 12px 0 0"></td></tr>
 <tr><td style="padding:24px">
-<p style="margin:0 0 4px;font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:${color}">${test ? "Test" : down ? "Panne détectée" : "Retour en ligne"}</p>
+<p style="margin:0 0 4px;font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:${color}">${escapeHtml(eyebrow)}</p>
 <h1 style="margin:0 0 12px;font-size:20px;line-height:1.3">${escapeHtml(title)}</h1>
 ${lines.map((l) => `<p style="margin:0 0 8px;font-size:14px;line-height:1.5;color:#464555">${escapeHtml(l)}</p>`).join("")}
 ${link ? `<p style="margin:20px 0 0"><a href="${escapeHtml(link)}" style="display:inline-block;background:#4f46e5;color:#ffffff;text-decoration:none;font-weight:600;font-size:14px;padding:10px 18px;border-radius:8px">Voir le détail</a></p>` : ""}
 </td></tr>
 <tr><td style="padding:0 24px 20px;font-size:12px;color:#64748b">Tu reçois ce message parce que ce site est surveillé par Vigie SaaS. Tu peux couper les alertes dans les réglages.</td></tr>
 </table></td></tr></table></body></html>`;
-  return { subject: test ? "Vigie SaaS : e-mail de test" : `Vigie SaaS : ${a.name} est ${down ? "hors ligne" : "de nouveau en ligne"}`, text, html };
+  return { subject, text, html };
 }
 
 export function mailer(): Resend | null {

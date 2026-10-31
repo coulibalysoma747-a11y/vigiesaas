@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { adminDb } from "@/lib/firebase-admin";
-import { MAX_MONITORS_PER_USER, normalizeInterval, parseMonitorUrl, shortHost } from "@/lib/monitoring";
+import { MAX_MONITORS_PER_USER, normalizeExpectText, normalizeInterval, normalizeMaxLatency, parseMonitorUrl, shortHost } from "@/lib/monitoring";
 import { fail, requireCaller } from "@/lib/server-auth";
 
 export const dynamic = "force-dynamic";
@@ -11,7 +11,9 @@ export async function POST(req: Request) {
   const caller = await requireCaller(req);
   if (caller instanceof NextResponse) return caller;
 
-  const body = (await req.json().catch(() => null)) as { url?: unknown; name?: unknown; intervalMin?: unknown } | null;
+  const body = (await req.json().catch(() => null)) as {
+    url?: unknown; name?: unknown; intervalMin?: unknown; expectText?: unknown; maxLatencyMs?: unknown; sslCheck?: unknown;
+  } | null;
   const parsed = parseMonitorUrl(String(body?.url ?? ""));
   if (!parsed.ok) return fail(parsed.error, 400);
 
@@ -26,6 +28,9 @@ export async function POST(req: Request) {
     url: parsed.url,
     isActive: true,
     intervalMin: normalizeInterval(body?.intervalMin),
+    expectText: normalizeExpectText(body?.expectText),
+    maxLatencyMs: normalizeMaxLatency(body?.maxLatencyMs),
+    sslCheck: parsed.url.startsWith("https:") && body?.sslCheck !== false,
     lastStatus: null,
     createdAt: FieldValue.serverTimestamp(),
   });

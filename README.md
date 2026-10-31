@@ -4,7 +4,11 @@ Surveillance de sites par e-mail + brocante des projets SaaS abandonnés.
 
 ## Ce que fait l'application
 - **Mes sites** : chaque site est contrôlé automatiquement (5, 10, 30 ou 60 minutes au choix). Temps de réponse mesuré, disponibilité sur 30 jours, barres d'historique, pause / reprise, « Vérifier maintenant ».
-- **Incidents** : chaque panne avec son début, sa cause et sa durée.
+- **Contrôles avancés** (facultatifs, site par site) :
+  - **Contenu de la page** : un texte qui doit apparaître ; s'il manque (page vide, erreur), le site est déclaré hors ligne même s'il répond.
+  - **Lenteur** : limite de 0,5 à 5 secondes ; alerte après 3 contrôles lents d'affilée, puis alerte de retour à la normale.
+  - **Certificat SSL** (sites https) : contrôlé toutes les 12 heures ; alerte à 14 jours, à 3 jours, à l'expiration, ou si le cadenas est invalide.
+- **Incidents** : chaque panne, lenteur ou problème de certificat avec son début, sa cause et sa durée.
 - **Alertes e-mail** à chaque panne et à chaque retour en ligne (un second essai a lieu quelques secondes après un échec : une micro-coupure ne déclenche rien). Envoyées seulement à l'adresse **vérifiée** du compte.
 - **Réglages** : alertes activées ou non, e-mail de test.
 - **Brocante** : annonces de projets abandonnés (recherche, tri, filtres, contact direct du vendeur, retrait de ses propres annonces).

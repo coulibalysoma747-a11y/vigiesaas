@@ -36,6 +36,13 @@ yarn-error.log*
 # vercel
 .vercel
 
+# Clés de compte de service Firebase : à ne JAMAIS enregistrer (le dépôt est public)
+sa.json
+sa-minified.txt
+*-adminsdk-*.json
+*serviceAccount*.json
+*service-account*.json
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

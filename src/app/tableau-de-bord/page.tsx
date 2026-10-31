@@ -8,9 +8,10 @@ import { Icon } from "@/components/Icon";
 import { StatusDot, StatusPill } from "@/components/StatusDot";
 import { UptimeRibbon } from "@/components/UptimeRibbon";
 import { VerifyEmailBanner } from "@/components/VerifyEmailBanner";
+import { Warnings } from "@/components/Warnings";
 import { api } from "@/lib/api-client";
 import { db } from "@/lib/firebase";
-import { MAX_MONITORS_PER_USER, formatPct, shortHost, summarize } from "@/lib/monitoring";
+import { LATENCY_OPTIONS, MAX_MONITORS_PER_USER, formatPct, formatSeconds, shortHost, summarize } from "@/lib/monitoring";
 import { PENDING_URL_KEY } from "@/lib/pending-url";
 import { ago } from "@/lib/safe-url";
 import { dateOf, type Monitor } from "@/lib/types";
@@ -30,6 +31,9 @@ export default function Dashboard() {
   // Adresse saisie sur l'accueil avant la création du compte : préremplie (la clé est effacée juste après).
   const [url, setUrl] = useState(pendingUrl);
   const [name, setName] = useState("");
+  const [expectText, setExpectText] = useState("");
+  const [maxLatency, setMaxLatency] = useState("");
+  const [sslCheck, setSslCheck] = useState(true);
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState("");
 
@@ -54,9 +58,12 @@ export default function Dashboard() {
     setError("");
     setAdding(true);
     try {
-      await api("/api/monitors", { method: "POST", body: { url, name } });
+      await api("/api/monitors", { method: "POST", body: { url, name, expectText, maxLatencyMs: maxLatency ? Number(maxLatency) : null, sslCheck } });
       setUrl("");
       setName("");
+      setExpectText("");
+      setMaxLatency("");
+      setSslCheck(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Ajout impossible.");
     } finally {
@@ -123,6 +130,27 @@ export default function Dashboard() {
           </div>
           <button className="btn-primary sm:!py-3" disabled={adding || list.length >= MAX_MONITORS_PER_USER}>{adding ? "Ajout…" : "Surveiller"}</button>
         </div>
+        <details className="mt-3 rounded-lg bg-surface-subtle px-4 py-3">
+          <summary className="cursor-pointer text-label-md font-semibold text-on-surface-variant">Contrôles avancés (facultatif) : contenu de la page, lenteur, certificat SSL</summary>
+          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+            <div className="sm:col-span-2">
+              <label htmlFor="expect" className="mb-1.5 block text-label-md font-semibold text-on-surface-variant">Texte qui doit apparaître sur la page</label>
+              <input id="expect" className="input" placeholder="Ex. : Connexion" maxLength={200} value={expectText} onChange={(e) => setExpectText(e.target.value)} />
+              <p className="mt-1 text-label-md text-text-muted">Si le site répond mais n&apos;affiche plus ce texte (page vide, erreur), il est déclaré hors ligne.</p>
+            </div>
+            <div>
+              <label htmlFor="slow" className="mb-1.5 block text-label-md font-semibold text-on-surface-variant">Alerter si plus lent que</label>
+              <select id="slow" className="input" value={maxLatency} onChange={(e) => setMaxLatency(e.target.value)}>
+                <option value="">Désactivé</option>
+                {LATENCY_OPTIONS.map((ms) => <option key={ms} value={ms}>{formatSeconds(ms)}</option>)}
+              </select>
+            </div>
+            <label className="flex items-start gap-3 text-body-sm text-on-surface-variant sm:pt-7">
+              <input type="checkbox" className="mt-1 h-4 w-4 accent-primary-container" checked={sslCheck} onChange={(e) => setSslCheck(e.target.checked)} />
+              <span><span className="font-semibold text-on-surface">Surveiller le certificat SSL</span><span className="block text-text-muted">Alerte avant l&apos;expiration du cadenas.</span></span>
+            </label>
+          </div>
+        </details>
         {error && <p role="alert" className="mt-3 rounded-lg bg-status-down/10 px-3 py-2 text-body-sm text-error">{error}</p>}
         <p className="mt-3 text-label-md text-text-muted">{list.length} / {MAX_MONITORS_PER_USER} sites · contrôle toutes les 5 minutes par défaut (modifiable pour chaque site).</p>
       </form>
@@ -147,6 +175,7 @@ export default function Dashboard() {
                     <div className="min-w-0 flex-1 basis-44">
                       <p className="truncate font-semibold text-on-surface">{m.name}</p>
                       <p className="truncate text-body-sm text-text-muted">{shortHost(m.url)}</p>
+                      <Warnings monitor={m} />
                     </div>
                     <div className="hidden lg:block"><UptimeRibbon bars={s.bars} compact /></div>
                     <div className="hidden w-24 text-right sm:block">

@@ -8,7 +8,7 @@ import { Icon } from "@/components/Icon";
 import { db } from "@/lib/firebase";
 import { formatDuration, shortHost } from "@/lib/monitoring";
 import { ago } from "@/lib/safe-url";
-import { dateOf, type Incident } from "@/lib/types";
+import { INCIDENT_LABEL, dateOf, type Incident } from "@/lib/types";
 
 export default function IncidentsPage() {
   const { user, loading } = useAuth();
@@ -53,7 +53,7 @@ export default function IncidentsPage() {
                   <Link href={`/tableau-de-bord/${i.monitorId}`} className="flex flex-wrap items-center justify-between gap-3 px-4 py-4 transition-colors hover:bg-surface-subtle sm:px-5">
                     <div className="min-w-0">
                       <p className="truncate font-semibold text-on-surface">{i.monitorName}</p>
-                      <p className="truncate text-body-sm text-text-muted">{shortHost(i.url)} · {i.reason ?? "Panne"}</p>
+                      <p className="truncate text-body-sm text-text-muted"><span className="mr-2 rounded-md bg-surface-container px-1.5 py-0.5 text-label-sm font-bold text-on-surface-variant">{INCIDENT_LABEL[i.kind ?? "down"]}</span>{shortHost(i.url)} · {i.reason ?? "Panne"}</p>
                       <p className="text-label-md text-text-muted">{start ? `${start.toLocaleString("fr-FR", { dateStyle: "medium", timeStyle: "short" })} (${ago(start)})` : ""}</p>
                     </div>
                     <span className={`rounded-full px-2.5 py-1 text-label-sm font-bold ${isOpen ? "bg-status-down/10 text-status-down" : "bg-secondary-fixed/30 text-secondary"}`}>

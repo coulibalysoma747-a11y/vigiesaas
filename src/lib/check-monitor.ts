@@ -1,10 +1,14 @@
-// Contrôle d'UN site : mesure, historique, incident, alerte. Serveur seulement (cron et « Vérifier maintenant »).
+// Contrôle d'UN site : mesure, historique, incidents, alertes. Serveur seulement (cron et « Vérifier maintenant »).
+// Quatre contrôles : le site répond (et contient le texte attendu), il n'est pas trop lent, son certificat SSL est en règle.
 import { FieldValue, Timestamp, type DocumentReference, type Firestore } from "firebase-admin/firestore";
 import type { Resend } from "resend";
 import { adminAuth } from "@/lib/firebase-admin";
-import { sendAlert } from "@/lib/alerts";
-import { dayDelta, staleDayKeys, transition, type Days } from "@/lib/monitoring";
-import { probe, type ProbeResult } from "@/lib/safe-fetch";
+import { sendAlert, type AlertKind } from "@/lib/alerts";
+import {
+  dayDelta, describeSlow, describeSsl, evalSlow, normalizeExpectText, normalizeMaxLatency, sslChange, sslDue, sslLevel, staleDayKeys, transition,
+  type Days, type SslLevel,
+} from "@/lib/monitoring";
+import { checkCertificate, probe, type ProbeResult } from "@/lib/safe-fetch";
 
 export type MonitorDoc = {
   userId: string;
@@ -12,10 +16,19 @@ export type MonitorDoc = {
   url: string;
   isActive?: boolean;
   intervalMin?: number;
+  expectText?: string | null;
+  maxLatencyMs?: number | null;
+  sslCheck?: boolean;
   lastStatus?: boolean | null;
   lastCheckedAt?: Timestamp | null;
   lastChangedAt?: Timestamp | null;
   openIncidentId?: string | null;
+  slowStreak?: number;
+  isSlow?: boolean;
+  openSlowIncidentId?: string | null;
+  sslLevel?: SslLevel | null;
+  sslCheckedAt?: Timestamp | null;
+  openSslIncidentId?: string | null;
   days?: Days;
 };
 
@@ -45,21 +58,51 @@ export type CheckContext = {
   resend: Resend | null;
   recipient: (uid: string) => Promise<Recipient>;
   now: Date;
+  /** « Vérifier maintenant » : contrôle aussi le certificat sans attendre les 12 heures. */
+  forceSsl?: boolean;
 };
 
-export type CheckOutcome = { result: ProbeResult; change: "none" | "down" | "up"; alerted: boolean };
+export type CheckOutcome = {
+  result: ProbeResult;
+  change: "none" | "down" | "up";
+  alerted: boolean;
+  ssl: { level: SslLevel; daysLeft: number | null } | null;
+  slow: boolean;
+};
+
+type IncidentKind = "down" | "slow" | "ssl";
+type Notice = { kind: AlertKind; reason?: string | null; downSeconds?: number | null; critical?: boolean };
 
 export async function checkMonitor(ref: DocumentReference, m: MonitorDoc, ctx: CheckContext, extra: Record<string, unknown> = {}): Promise<CheckOutcome> {
   const { db, now } = ctx;
-  const result = await probe(m.url);
-  const change = transition(m.lastStatus ?? null, result.up);
   const at = Timestamp.fromDate(now);
+  const notices: Notice[] = [];
+
+  const openIncident = async (kind: IncidentKind, reason: string): Promise<string> => {
+    const incident = db.collection("incidents").doc();
+    await incident.set({ userId: m.userId, monitorId: ref.id, monitorName: m.name, url: m.url, kind, startedAt: at, resolvedAt: null, durationSec: null, reason });
+    return incident.id;
+  };
+  /** Ferme un incident et renvoie sa durée en secondes (null si elle est inconnue). */
+  const closeIncident = async (id: string): Promise<number | null> => {
+    const doc = db.collection("incidents").doc(id);
+    const startedMs = ((await doc.get()).data()?.startedAt as Timestamp | undefined)?.toMillis?.() ?? null;
+    const seconds = startedMs === null ? null : Math.max(0, Math.round((now.getTime() - startedMs) / 1000));
+    await doc.update({ resolvedAt: at, durationSec: seconds }).catch(() => {});
+    return seconds;
+  };
+
+  // 1. Le site répond-il (et contient-il le texte attendu) ?
+  const expectText = normalizeExpectText(m.expectText);
+  const result = await probe(m.url, { expectText });
+  const change = transition(m.lastStatus ?? null, result.up);
 
   const update: Record<string, unknown> = {
     lastStatus: result.up,
     lastCode: result.code,
     lastError: result.error,
     lastLatencyMs: result.latencyMs,
+    lastContentOk: result.contentOk,
     lastCheckedAt: at,
     ...extra,
   };
@@ -74,43 +117,80 @@ export async function checkMonitor(ref: DocumentReference, m: MonitorDoc, ctx: C
   }
   for (const stale of staleDayKeys(m.days, now)) update[`days.${stale}`] = FieldValue.delete();
 
-  let downSeconds: number | null = null;
   if (change === "went_down" || change === "first_down") {
-    const incident = db.collection("incidents").doc();
-    await incident.set({ userId: m.userId, monitorId: ref.id, monitorName: m.name, url: m.url, startedAt: at, resolvedAt: null, durationSec: null, reason: result.reason ?? "Pas de réponse" });
-    update.openIncidentId = incident.id;
+    update.openIncidentId = await openIncident("down", result.reason ?? "Pas de réponse");
     update.lastChangedAt = at;
+    notices.push({ kind: "down", reason: result.reason });
   } else if (change === "recovered") {
+    const fromIncident = m.openIncidentId ? await closeIncident(m.openIncidentId) : null;
     const startedMs = m.lastChangedAt?.toMillis?.() ?? null;
-    downSeconds = startedMs === null ? null : Math.max(0, Math.round((now.getTime() - startedMs) / 1000));
-    if (m.openIncidentId) {
-      await db.collection("incidents").doc(m.openIncidentId).update({ resolvedAt: at, durationSec: downSeconds }).catch(() => {});
-    }
+    const downSeconds = fromIncident ?? (startedMs === null ? null : Math.max(0, Math.round((now.getTime() - startedMs) / 1000)));
     update.openIncidentId = null;
     update.lastChangedAt = at;
+    notices.push({ kind: "up", downSeconds });
+  }
+
+  // 2. Le site est-il trop lent ? (seulement s'il répond, et après 3 contrôles lents d'affilée)
+  const maxMs = normalizeMaxLatency(m.maxLatencyMs);
+  const slow = evalSlow({ streak: m.slowStreak, isSlow: m.isSlow }, result.up, result.latencyMs, maxMs);
+  update.slowStreak = slow.streak;
+  update.isSlow = slow.isSlow;
+  if (slow.change === "became_slow" && result.latencyMs !== null && maxMs !== null) {
+    const reason = describeSlow(result.latencyMs, maxMs);
+    update.openSlowIncidentId = await openIncident("slow", reason);
+    notices.push({ kind: "slow", reason });
+  } else if (!slow.isSlow && m.openSlowIncidentId) {
+    const seconds = await closeIncident(m.openSlowIncidentId);
+    update.openSlowIncidentId = null;
+    if (slow.change === "back_to_normal") notices.push({ kind: "slow_ok", downSeconds: seconds }); // pas de message si le site est tombé entre-temps
+  }
+
+  // 3. Le certificat SSL est-il en règle ? (https seulement, toutes les 12 heures)
+  let ssl: CheckOutcome["ssl"] = null;
+  const wantsSsl = m.sslCheck !== false && m.url.toLowerCase().startsWith("https:");
+  if (wantsSsl && (ctx.forceSsl || sslDue(m.sslCheckedAt?.toMillis?.() ?? null, now.getTime()))) {
+    const cert = await checkCertificate(m.url, now);
+    if (cert) {
+      const level = sslLevel(cert);
+      ssl = { level, daysLeft: cert.daysLeft };
+      update.sslCheckedAt = at;
+      update.sslLevel = level;
+      update.sslDaysLeft = cert.daysLeft;
+      update.sslExpiresAt = cert.expiresAt ? Timestamp.fromDate(cert.expiresAt) : null;
+      const verdict = sslChange(m.sslLevel, level);
+      const reason = describeSsl(level, cert.daysLeft);
+      if (verdict === "worse") {
+        if (m.openSslIncidentId) await db.collection("incidents").doc(m.openSslIncidentId).update({ reason }).catch(() => {});
+        else update.openSslIncidentId = await openIncident("ssl", reason);
+        notices.push({ kind: "ssl", reason, critical: level === "expired" || level === "invalid" });
+      } else if (verdict === "fixed") {
+        if (m.openSslIncidentId) await closeIncident(m.openSslIncidentId);
+        update.openSslIncidentId = null;
+        notices.push({ kind: "ssl_ok", reason });
+      }
+    }
   }
 
   await ref.update(update);
 
+  // Alertes : après l'enregistrement, et une alerte qui échoue ne casse jamais le contrôle.
   let alerted = false;
-  if (change !== "none" && ctx.resend) {
+  if (notices.length && ctx.resend) {
     try {
       const to = await ctx.recipient(m.userId);
       if (to.email && to.verified && to.enabled) {
-        await sendAlert(ctx.resend, to.email, {
-          kind: change === "recovered" ? "up" : "down",
-          name: m.name,
-          url: m.url,
-          monitorId: ref.id,
-          reason: result.reason,
-          downSeconds,
-          at: now,
-        });
-        alerted = true;
+        for (const notice of notices) {
+          try {
+            await sendAlert(ctx.resend, to.email, { ...notice, name: m.name, url: m.url, monitorId: ref.id, at: now });
+            alerted = true;
+          } catch (e) {
+            console.error("alerte non envoyée :", notice.kind, e instanceof Error ? e.message : e);
+          }
+        }
       }
     } catch (e) {
-      console.error("alerte non envoyée :", e instanceof Error ? e.message : e);
+      console.error("destinataire introuvable :", e instanceof Error ? e.message : e);
     }
   }
-  return { result, change: change === "none" ? "none" : change === "recovered" ? "up" : "down", alerted };
+  return { result, change: change === "none" ? "none" : change === "recovered" ? "up" : "down", alerted, ssl, slow: slow.isSlow };
 }

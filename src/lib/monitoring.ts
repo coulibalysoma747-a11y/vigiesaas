@@ -165,6 +165,90 @@ export function parseMonitorUrl(raw: string): ParsedUrl {
   return { ok: true, url: url.href, host };
 }
 
+// ───── Contrôles avancés : contenu de la page, lenteur, certificat SSL ─────
+
+export const EXPECT_TEXT_MAX = 200;
+export const LATENCY_OPTIONS = [500, 1000, 2000, 3000, 5000] as const;
+/** Une lenteur n'est signalée qu'après ce nombre de contrôles lents d'affilée (un pic isolé ne compte pas). */
+export const SLOW_STREAK = 3;
+export const SSL_RECHECK_HOURS = 12;
+
+/** Limite de lenteur autorisée en millisecondes, ou null (désactivé). */
+export function normalizeMaxLatency(value: unknown): number | null {
+  if (value === null || value === undefined || value === "" || value === 0 || value === "0") return null;
+  const n = Number(value);
+  return (LATENCY_OPTIONS as readonly number[]).includes(n) ? n : null;
+}
+
+/** Texte attendu sur la page : espaces compactés, 200 caractères au plus, ou null (désactivé). */
+export function normalizeExpectText(value: unknown): string | null {
+  const s = String(value ?? "").replace(/\s+/g, " ").trim().slice(0, EXPECT_TEXT_MAX);
+  return s || null;
+}
+
+/** Le texte attendu est-il sur la page ? Sans tenir compte des majuscules ni des espaces multiples. */
+export function bodyHasText(body: string, expected: string): boolean {
+  const flat = (s: string) => s.replace(/\s+/g, " ").toLowerCase();
+  return flat(body).includes(flat(expected));
+}
+
+export type SlowEval = { streak: number; isSlow: boolean; change: "none" | "became_slow" | "back_to_normal" };
+
+/**
+ * Lenteur : seul un site EN LIGNE peut être « lent ». Il devient lent après SLOW_STREAK contrôles consécutifs
+ * au-dessus de la limite, et redevient normal dès qu'un contrôle repasse sous la limite.
+ */
+export function evalSlow(prev: { streak?: number; isSlow?: boolean }, up: boolean, latencyMs: number | null, maxMs: number | null): SlowEval {
+  if (!up || maxMs === null || latencyMs === null) return { streak: 0, isSlow: false, change: "none" };
+  const wasSlow = !!prev.isSlow;
+  if (latencyMs > maxMs) {
+    const streak = (prev.streak ?? 0) + 1;
+    const isSlow = wasSlow || streak >= SLOW_STREAK;
+    return { streak, isSlow, change: !wasSlow && isSlow ? "became_slow" : "none" };
+  }
+  return { streak: 0, isSlow: false, change: wasSlow ? "back_to_normal" : "none" };
+}
+
+export const formatSeconds = (ms: number) => `${(ms / 1000).toFixed(1).replace(".", ",")} s`;
+
+export function describeSlow(latencyMs: number, maxMs: number): string {
+  return `Lent : ${formatSeconds(latencyMs)} (limite ${formatSeconds(maxMs)})`;
+}
+
+export type SslLevel = "ok" | "warn14" | "warn3" | "expired" | "invalid";
+const SSL_RANK: Record<SslLevel, number> = { ok: 0, warn14: 1, warn3: 2, expired: 3, invalid: 4 };
+
+export const daysUntil = (date: Date, now: Date) => Math.floor((date.getTime() - now.getTime()) / 86_400_000);
+
+/** Niveau d'un certificat : expiré, invalide (non reconnu, mauvais nom…), expire sous 3 jours, sous 14 jours, ou valide. */
+export function sslLevel(cert: { authorized: boolean; daysLeft: number | null }): SslLevel {
+  if (cert.daysLeft !== null && cert.daysLeft < 0) return "expired";
+  if (!cert.authorized || cert.daysLeft === null) return "invalid";
+  if (cert.daysLeft <= 3) return "warn3";
+  if (cert.daysLeft <= 14) return "warn14";
+  return "ok";
+}
+
+/** Alerte seulement quand la situation EMPIRE (14 j, puis 3 j, puis expiré, ou invalide) ou quand elle est RÉPARÉE : jamais de répétition. */
+export function sslChange(previous: SslLevel | null | undefined, next: SslLevel): "worse" | "fixed" | "none" {
+  const before = previous ?? "ok";
+  if (SSL_RANK[next] > SSL_RANK[before]) return "worse";
+  if (next === "ok" && before !== "ok") return "fixed";
+  return "none";
+}
+
+export function sslDue(lastCheckedMs: number | null, nowMs: number): boolean {
+  return lastCheckedMs === null || nowMs - lastCheckedMs >= SSL_RECHECK_HOURS * 3_600_000 - 60_000;
+}
+
+export function describeSsl(level: SslLevel, daysLeft: number | null): string {
+  if (level === "expired") return "Le certificat SSL a expiré";
+  if (level === "invalid") return "Certificat SSL invalide (non reconnu ou ne correspondant pas au site)";
+  const n = daysLeft ?? 0;
+  if (level === "ok") return `Certificat SSL valide (expire dans ${n} jour${n > 1 ? "s" : ""})`;
+  return `Le certificat SSL expire dans ${n} jour${n > 1 ? "s" : ""}`;
+}
+
 /** « https://www.exemple.com/page » devient « exemple.com ». */
 export function shortHost(raw: string): string {
   const parsed = parseMonitorUrl(raw);

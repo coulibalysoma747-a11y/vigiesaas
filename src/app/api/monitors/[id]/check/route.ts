@@ -7,7 +7,7 @@ import { allowOnce, fail, ownMonitor, requireCaller } from "@/lib/server-auth";
 
 export const dynamic = "force-dynamic";
 
-/** « Vérifier maintenant » : contrôle immédiat d'un de SES sites (au plus une fois toutes les 20 secondes par site). */
+/** « Vérifier maintenant » : contrôle immédiat d'un de SES sites, certificat compris (au plus une fois toutes les 20 secondes par site). */
 export async function POST(req: Request, ctx: { params: Promise<{ id: string }> }) {
   const caller = await requireCaller(req);
   if (caller instanceof NextResponse) return caller;
@@ -18,6 +18,15 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
 
   const db = adminDb();
   const now = new Date();
-  const out = await checkMonitor(mine.ref, mine.data, { db, resend: mailer(), recipient: makeRecipientResolver(db), now }, { lastManualCheckAt: Timestamp.fromDate(now) });
-  return NextResponse.json({ up: out.result.up, code: out.result.code, latencyMs: out.result.latencyMs, reason: out.result.reason });
+  const out = await checkMonitor(mine.ref, mine.data, { db, resend: mailer(), recipient: makeRecipientResolver(db), now, forceSsl: true }, { lastManualCheckAt: Timestamp.fromDate(now) });
+  return NextResponse.json({
+    up: out.result.up,
+    code: out.result.code,
+    latencyMs: out.result.latencyMs,
+    reason: out.result.reason,
+    contentOk: out.result.contentOk,
+    slow: out.slow,
+    sslLevel: out.ssl?.level ?? null,
+    sslDaysLeft: out.ssl?.daysLeft ?? null,
+  });
 }

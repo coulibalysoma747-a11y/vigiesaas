@@ -1,13 +1,13 @@
 import { NextResponse } from "next/server";
 import { adminDb } from "@/lib/firebase-admin";
-import { normalizeInterval } from "@/lib/monitoring";
+import { normalizeExpectText, normalizeInterval, normalizeMaxLatency } from "@/lib/monitoring";
 import { fail, ownMonitor, requireCaller } from "@/lib/server-auth";
 
 export const dynamic = "force-dynamic";
 
 type Ctx = { params: Promise<{ id: string }> };
 
-/** Modifie un de SES sites : nom, pause / reprise, fréquence de contrôle. Rien d'autre n'est modifiable. */
+/** Modifie un de SES sites : nom, pause / reprise, fréquence, texte attendu, limite de lenteur, certificat SSL. Rien d'autre n'est modifiable. */
 export async function PATCH(req: Request, ctx: Ctx) {
   const caller = await requireCaller(req);
   if (caller instanceof NextResponse) return caller;
@@ -15,11 +15,20 @@ export async function PATCH(req: Request, ctx: Ctx) {
   const mine = await ownMonitor(id, caller.uid);
   if (!mine) return fail("Site introuvable.", 404);
 
-  const body = (await req.json().catch(() => null)) as { name?: unknown; isActive?: unknown; intervalMin?: unknown } | null;
+  const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
   const update: Record<string, unknown> = {};
   if (typeof body?.isActive === "boolean") update.isActive = body.isActive;
-  if (body?.intervalMin !== undefined) update.intervalMin = normalizeInterval(body.intervalMin);
+  if (body && "intervalMin" in body) update.intervalMin = normalizeInterval(body.intervalMin);
   if (typeof body?.name === "string" && body.name.trim()) update.name = body.name.trim().slice(0, 80);
+  if (body && "expectText" in body) update.expectText = normalizeExpectText(body.expectText);
+  if (body && "maxLatencyMs" in body) {
+    update.maxLatencyMs = normalizeMaxLatency(body.maxLatencyMs);
+    update.slowStreak = 0;
+  }
+  if (typeof body?.sslCheck === "boolean") {
+    update.sslCheck = body.sslCheck && mine.data.url.toLowerCase().startsWith("https:");
+    if (update.sslCheck) update.sslCheckedAt = null; // contrôle du certificat au prochain passage
+  }
   if (!Object.keys(update).length) return fail("Rien à modifier.", 400);
 
   await mine.ref.update(update);
