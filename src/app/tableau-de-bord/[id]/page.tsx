@@ -6,6 +6,7 @@ import { collection, doc, onSnapshot, query, where } from "firebase/firestore";
 import { useAuth } from "@/components/AuthProvider";
 import { ChecksPanel } from "@/components/ChecksPanel";
 import { CrawlPanel } from "@/components/CrawlPanel";
+import { DiagnosisBox } from "@/components/DiagnosisBox";
 import { FeaturesPanel } from "@/components/FeaturesPanel";
 import { RobotPanel } from "@/components/RobotPanel";
 import { Icon } from "@/components/Icon";
@@ -71,7 +72,13 @@ export default function MonitorDetail() {
   const paused = monitor.isActive === false;
   const checked = dateOf(monitor.lastCheckedAt);
   const interval = monitor.intervalMin ?? 5;
-  const failure = monitor.lastStatus === false ? describeFailure(monitor.lastCode ?? null, (monitor.lastError ?? null) as ProbeError | null) : null;
+  // La page répond mais n'affiche plus le texte attendu : le motif n'est pas « HTTP 200 », c'est le texte manquant.
+  const failure =
+    monitor.lastStatus === false
+      ? monitor.lastContentOk === false && monitor.expectText
+        ? `Texte attendu introuvable : « ${monitor.expectText} »`
+        : describeFailure(monitor.lastCode ?? null, (monitor.lastError ?? null) as ProbeError | null)
+      : null;
 
   return (
     <div className="mx-auto max-w-4xl px-4 py-8 sm:px-8 sm:py-12">
@@ -106,7 +113,12 @@ export default function MonitorDetail() {
           </div>
         </div>
 
-        {failure && <p role="alert" className="mb-4 rounded-lg bg-status-down/10 px-3 py-2.5 text-body-sm font-medium text-error">Panne en cours : {failure}.</p>}
+        {failure && (
+          <div className="mb-4">
+            <p role="alert" className="rounded-lg bg-status-down/10 px-3 py-2.5 text-body-sm font-medium text-error">Panne en cours : {failure}.</p>
+            <DiagnosisBox reason={failure} open />
+          </div>
+        )}
 
         <div>
           <div className="mb-1 flex items-center justify-between text-label-sm font-bold text-text-muted">
@@ -181,6 +193,7 @@ export default function MonitorDetail() {
                 <span className={`rounded-full px-2.5 py-1 text-label-sm font-bold ${open ? "bg-status-down/10 text-status-down" : "bg-secondary-fixed/30 text-secondary"}`}>
                   {open ? "En cours" : `Résolu · ${formatDuration(i.durationSec ?? 0)}`}
                 </span>
+                <div className="basis-full"><DiagnosisBox reason={i.reason} kind={i.kind} /></div>
               </li>
             );
           })}

@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { collection, onSnapshot, query, where } from "firebase/firestore";
 import { useAuth } from "@/components/AuthProvider";
+import { DiagnosisBox } from "@/components/DiagnosisBox";
 import { Icon } from "@/components/Icon";
 import { db } from "@/lib/firebase";
 import { formatDuration, shortHost } from "@/lib/monitoring";
@@ -72,6 +73,7 @@ export default function IncidentsPage() {
                       {isOpen ? "En cours" : `Résolu · ${formatDuration(i.durationSec ?? 0)}`}
                     </span>
                   </Link>
+                  <div className="px-4 pb-3 sm:px-5"><DiagnosisBox reason={i.reason} kind={i.kind} /></div>
                 </li>
               );
             })}

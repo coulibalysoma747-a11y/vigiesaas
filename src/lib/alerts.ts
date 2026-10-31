@@ -1,5 +1,6 @@
 // E-mails d'alerte. Serveur seulement.
 import { Resend } from "resend";
+import { diagnose } from "@/lib/diagnosis";
 import { formatDuration } from "@/lib/monitoring";
 
 const escapeHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -161,6 +162,12 @@ export function buildAlert(input: AlertInput): { subject: string; text: string; 
       break;
   }
   lines = lines.filter(Boolean);
+  // Pourquoi ça arrive et comment le régler : une alerte qui ne dit que « c'est cassé » laisse l'utilisateur sans piste.
+  const diagnosed = ["down", "down_again", "slow", "ssl", "feature_down", "robot_down"].includes(a.kind) ? diagnose(a.reason, a.kind === "robot_down" ? "robot" : "down") : null;
+  if (diagnosed) {
+    const steps = diagnosed.steps.filter((s) => !s.startsWith("Dès que le problème")).map((s, i) => `${i + 1}. ${s}`);
+    lines.push(`Pourquoi : ${diagnosed.cause}`, `Comment régler : ${steps.join(" ")}`);
+  }
   lines.push(`Constaté le ${when(a.at)}.`);
 
   const text = `${lines.join("\n")}${link ? `\n\nVoir le détail : ${link}` : ""}\n\n— Vigie SaaS`;

@@ -1,5 +1,6 @@
 "use client";
 import { useState } from "react";
+import { DiagnosisBox } from "@/components/DiagnosisBox";
 import { api } from "@/lib/api-client";
 import { ROBOT_MAX_PAGES, ROBOT_MAX_STEPS, formatSeconds } from "@/lib/monitoring";
 import { ago } from "@/lib/safe-url";
@@ -70,6 +71,7 @@ export function RobotPanel({ monitor: m, onNotice }: { monitor: Monitor; onNotic
         {state.detail}
         {last ? <span className="text-text-muted"> · dernier passage {ago(last)}</span> : null}
       </p>
+      {enabled && last && robot?.ok === false ? <DiagnosisBox reason={robot.reason} kind="robot" open /> : null}
 
       {robot?.pages && robot.pages.length > 0 && (
         <details className="mt-3 rounded-xl bg-surface-subtle px-4 py-3">

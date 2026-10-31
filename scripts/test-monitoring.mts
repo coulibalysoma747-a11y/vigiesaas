@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import * as robotRules from "../robot/rules.mjs";
+import { diagnose } from "../src/lib/diagnosis.ts";
 import { decryptSecret, encryptSecret, vaultReady } from "../src/lib/robot-crypto.ts";
 import {
   ROBOT_FORBIDDEN, parseScenario, sanitizeSteps,
@@ -518,3 +519,49 @@ test("vigilance : rappel dû après 30 minutes seulement (tolérance 30 s)", () 
   assert.equal(reminderDue(now - 3 * 3600_000, now), true);
 });
 
+
+test("diagnostic : chaque problème a une cause en français simple et des étapes pour le régler", () => {
+  assert.equal(diagnose(null), null);
+  assert.equal(diagnose("   "), null);
+  const cause = (reason: string, kind = "down") => diagnose(reason, kind)?.cause ?? "";
+  const d402 = diagnose("Réponse HTTP 402");
+  assert.match(d402?.cause ?? "", /Paiement requis/);
+  assert.ok((d402?.steps.length ?? 0) >= 3);
+  assert.match(d402?.steps.join(" ") ?? "", /Vercel|hébergeur/);
+  assert.match(cause("Réponse HTTP 401"), /accès est refusé/);
+  assert.match(cause("Réponse HTTP 403"), /accès est refusé/);
+  assert.match(cause("Réponse HTTP 404"), /n'existe plus/);
+  assert.match(cause("Réponse HTTP 404 (attendu : 200)"), /n'existe plus/);
+  assert.match(cause("Réponse HTTP 429"), /trop de requêtes/);
+  assert.match(cause("Réponse HTTP 500"), /erreur interne/);
+  assert.match(cause("Réponse HTTP 502"), /502 ou 504/);
+  assert.match(cause("Réponse HTTP 504"), /502 ou 504/);
+  assert.match(cause("Réponse HTTP 503"), /indisponible/);
+  assert.match(cause("Réponse HTTP 599"), /5xx/);
+  assert.match(cause("Réponse HTTP 418"), /4xx/);
+  assert.match(cause("Délai dépassé (10 s)"), /plus de 10 secondes/);
+  assert.match(cause("Adresse introuvable (DNS)"), /nom de domaine/);
+  assert.match(cause("Site injoignable"), /connexion/);
+  assert.match(cause("Pas de réponse"), /connexion/);
+  assert.match(cause("Trop de redirections"), /boucle/);
+  assert.match(cause("Adresse non autorisée"), /réseau privé/);
+  assert.match(cause("Texte attendu introuvable : « Connexion »"), /texte que tu as demandé/);
+  assert.match(cause("Lent : 4,2 s (limite 3 s)"), /plus lentement/);
+  assert.match(cause("Le certificat SSL a expiré"), /a expiré/);
+  assert.match(cause("Certificat SSL invalide (non reconnu ou ne correspondant pas au site)"), /pas reconnu/);
+  assert.match(cause("Le certificat SSL expire dans 12 jours"), /va bientôt expirer/);
+  // Fonctionnalité ou page : « Nom : Réponse HTTP 404 » est compris aussi.
+  assert.match(cause("Paiement : Réponse HTTP 500"), /erreur interne/);
+  // Robot : ses messages passent avant les codes HTTP.
+  assert.match(cause("Connexion impossible : connexion refusée : « Firebase: Error (auth/invalid-credential). »", "robot"), /compte de test/);
+  assert.match(cause("Connexion impossible : Aucun champ mot de passe sur la page de connexion.", "robot"), /formulaire de connexion/);
+  assert.match(cause("scénario en échec à « voir « Lien créé » » (introuvable (délai dépassé))", "robot"), /geste de ton scénario/);
+  assert.match(cause("2 pages de l'application en erreur : /app (HTTP 500), /x (Délai dépassé)", "robot"), /pages de l'application/);
+  assert.match(cause("1 page de l'application en erreur : /app (POST /api/x répond 500)", "robot"), /appels qu'elle fait/); // la cause la plus précise passe avant la phrase générale
+  assert.match(cause("POST /api/x répond 500", "robot"), /appels qu'elle fait/);
+  assert.match(cause("Redirigé vers la connexion (session perdue)", "robot"), /session/);
+  // Message inconnu : une piste générale plutôt que rien.
+  const unknown = diagnose("Quelque chose d'étrange");
+  assert.match(unknown?.cause ?? "", /sans cause précise/);
+  assert.ok((unknown?.steps.length ?? 0) >= 2);
+});
