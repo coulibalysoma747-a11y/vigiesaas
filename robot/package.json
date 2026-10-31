@@ -1,0 +1,9 @@
+{
+  "name": "vigie-robot",
+  "private": true,
+  "type": "module",
+  "description": "Robot de connexion de Vigie SaaS (navigateur piloté par GitHub Actions)",
+  "dependencies": {
+    "playwright-core": "1.49.1"
+  }
+}

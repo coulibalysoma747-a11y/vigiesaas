@@ -48,6 +48,7 @@ export async function POST(req: Request) {
     sslCheck: parsed.url.startsWith("https:") && body?.sslCheck !== false,
     features,
     featuresDown: 0,
+    autoCrawl: true,
     lastStatus: null,
     createdAt: FieldValue.serverTimestamp(),
   });

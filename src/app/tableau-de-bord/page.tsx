@@ -14,7 +14,7 @@ import { db } from "@/lib/firebase";
 import { LATENCY_OPTIONS, MAX_MONITORS_PER_USER, formatPct, formatSeconds, shortHost, summarize } from "@/lib/monitoring";
 import { PENDING_URL_KEY } from "@/lib/pending-url";
 import { ago } from "@/lib/safe-url";
-import { dateOf, type Monitor } from "@/lib/types";
+import { dateOf, problemCount, type Monitor } from "@/lib/types";
 
 function pendingUrl(): string {
   try {
@@ -74,7 +74,7 @@ export default function Dashboard() {
 
   const list = useMemo(() => [...(monitors ?? [])].sort((a, b) => (dateOf(b.lastChangedAt)?.getTime() ?? 0) - (dateOf(a.lastChangedAt)?.getTime() ?? 0) || a.name.localeCompare(b.name, "fr")), [monitors]);
   const active = list.filter((m) => m.isActive !== false);
-  const partial = (m: Monitor) => m.lastStatus === true && (m.featuresDown ?? 0) > 0; // répond, mais une fonctionnalité est en panne
+  const partial = (m: Monitor) => m.lastStatus === true && problemCount(m) > 0; // répond, mais une fonctionnalité est en panne
   const online = active.filter((m) => m.lastStatus === true && !partial(m)).length;
   const problems = active.filter((m) => m.lastStatus === false || partial(m)).length;
   const overall = useMemo(() => {
@@ -173,7 +173,7 @@ export default function Dashboard() {
               return (
                 <li key={m.id}>
                   <Link href={`/tableau-de-bord/${m.id}`} className="flex flex-wrap items-center gap-x-4 gap-y-3 px-4 py-4 transition-colors hover:bg-surface-subtle sm:px-5">
-                    <StatusDot status={paused ? null : m.lastStatus} degraded={(m.featuresDown ?? 0) > 0} />
+                    <StatusDot status={paused ? null : m.lastStatus} degraded={problemCount(m) > 0} />
                     <div className="min-w-0 flex-1 basis-44">
                       <p className="truncate font-semibold text-on-surface">{m.name}</p>
                       <p className="truncate text-body-sm text-text-muted">{shortHost(m.url)}</p>
@@ -188,7 +188,7 @@ export default function Dashboard() {
                     {paused ? (
                       <span className="inline-flex items-center rounded-full bg-surface-container px-2.5 py-1 text-label-sm font-bold text-text-muted">En pause</span>
                     ) : (
-                      <StatusPill status={m.lastStatus} degraded={(m.featuresDown ?? 0) > 0} />
+                      <StatusPill status={m.lastStatus} degraded={problemCount(m) > 0} />
                     )}
                     <Icon name="arrow-right" size={16} className="hidden text-text-muted sm:block" />
                   </Link>

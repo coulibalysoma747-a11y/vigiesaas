@@ -5,6 +5,11 @@ export function Warnings({ monitor: m }: { monitor: Monitor }) {
   const items: { text: string; bad: boolean }[] = [];
   const down = (m.features ?? []).filter((f) => m.featureState?.[f.id]?.up === false);
   if (down.length) items.push({ text: down.length === 1 ? `${down[0].name} en panne` : `${down.length} fonctionnalités en panne`, bad: true });
+  if (m.robot?.enabled && m.robot.ok === false) items.push({ text: m.robot.loginOk === false ? "Robot : connexion impossible" : "Robot : application en erreur", bad: true });
+  const pagesDown = m.crawlDown ?? 0;
+  if (pagesDown > 0) items.push({ text: `${pagesDown} page${pagesDown > 1 ? "s" : ""} en panne`, bad: true });
+  const broken = m.crawlBroken ?? 0;
+  if (broken > 0) items.push({ text: `${broken} lien${broken > 1 ? "s" : ""} cassé${broken > 1 ? "s" : ""}`, bad: false });
   if (m.isSlow) items.push({ text: "Lent", bad: false });
   if (m.sslCheck !== false) {
     if (m.sslLevel === "warn14") items.push({ text: `SSL : ${m.sslDaysLeft} j`, bad: false });

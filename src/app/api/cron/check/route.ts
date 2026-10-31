@@ -31,7 +31,7 @@ export async function GET(req: Request) {
 
   const started = Date.now();
   const db = adminDb();
-  const ctx = { db, resend: mailer(), recipient: makeRecipientResolver(db), now: new Date() };
+  const ctx = { db, resend: mailer(), recipient: makeRecipientResolver(db), now: new Date(), crawlBudget: new Map<string, number>() };
 
   const snap = await db.collection("monitors").where("isActive", "==", true).limit(MAX_MONITORS_PER_RUN).get();
   const perUser = new Map<string, number>();

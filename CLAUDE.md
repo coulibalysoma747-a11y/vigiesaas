@@ -11,6 +11,7 @@ Le propriétaire n'est pas développeur : répondre en français, simplement, UN
 - Mise en ligne : Render (`render.yaml`). Dépôt de travail : `coulibalysoma747-a11y/vigiesaas` (PAS `ecosouf7-dot/vigiesaas`, qui est vide).
 - Un autre outil commite et pousse parfois à la place du propriétaire : relire `git status` avant d'écrire.
 - Le contrôle automatique passe par `/api/cron/check` (fermé tant que `CRON_SECRET` n'est pas réglé sur le serveur).
+- Robot de connexion : `robot/run.mjs` (Playwright, lancé par `.github/workflows/robot.yml`) lit `/api/robot/jobs` et répond à `/api/robot/report` (tous deux fermés sans `ROBOT_SECRET`). Les mots de passe de test sont chiffrés dans `robotSecrets/{monitorId}` (clé `ROBOT_ENC_KEY`), jamais renvoyés au navigateur ni écrits dans les journaux (le dépôt est public). Le robot ne clique jamais (hors connexion) et ne se déconnecte jamais : ne pas assouplir. Essai local : faux site + `ROBOT_ALLOW_PRIVATE=1` + `ROBOT_BROWSER_PATH` (Edge), dans une copie hors du dépôt.
 
 ## État au 2026-10-30
 Fait : design clair (maquettes Stitch), historique sur 30 jours, incidents, réglages, moteur de contrôle sécurisé (adresses privées refusées, 20 sites maximum par compte, alertes seulement vers l'adresse vérifiée du compte), correctif Render (`npm install --include=dev`, Node 22), règles Firestore dans `firestore.rules`. Le site est en ligne sur https://vigiesaas.onrender.com.

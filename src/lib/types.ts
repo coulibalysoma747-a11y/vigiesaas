@@ -27,10 +27,49 @@ export type Monitor = {
   features?: Feature[];
   featureState?: Record<string, { up?: boolean; code?: number | null; latencyMs?: number | null; reason?: string | null; checkedAt?: Stamp; changedAt?: Stamp } | undefined>;
   featuresDown?: number;
+  autoCrawl?: boolean;
+  crawlPages?: Record<string, CrawlPage | undefined>;
+  crawlDiscoveredAt?: Stamp;
+  crawlTotal?: number;
+  crawlDown?: number;
+  crawlBroken?: number;
+  robot?: RobotInfo;
   days?: Days;
 };
 
-export type IncidentKind = "down" | "slow" | "ssl" | "feature";
+/** Robot de connexion d'un site : réglages (jamais le mot de passe) et dernier passage. */
+export type RobotInfo = {
+  enabled?: boolean;
+  loginPath?: string;
+  email?: string;
+  hasPassword?: boolean;
+  lastRunAt?: Stamp;
+  ok?: boolean | null;
+  reason?: string | null;
+  loginOk?: boolean;
+  pagesTested?: number;
+  pagesFailed?: number;
+  pagesBroken?: number;
+  pages?: { path: string; status: number | null; ms: number | null; error: string | null }[];
+};
+
+/** Une page découverte par l'exploration automatique. `up` vaut vrai aussi pour une page protégée (qui demande une connexion). */
+export type CrawlPage = {
+  path: string;
+  up?: boolean;
+  protected?: boolean;
+  everOk?: boolean;
+  code?: number | null;
+  latencyMs?: number | null;
+  reason?: string | null;
+  checkedAt?: Stamp;
+};
+
+/** Problèmes en cours qui rendent un site « partiel » : fonctionnalités en panne + pages découvertes qui ne répondent plus. */
+export const problemCount = (m: { featuresDown?: number; crawlDown?: number; robot?: { enabled?: boolean; ok?: boolean | null } }) =>
+  (m.featuresDown ?? 0) + (m.crawlDown ?? 0) + (m.robot?.enabled && m.robot.ok === false ? 1 : 0);
+
+export type IncidentKind = "down" | "slow" | "ssl" | "feature" | "page" | "robot";
 
 export type Incident = {
   id: string;
@@ -45,6 +84,6 @@ export type Incident = {
   reason?: string;
 };
 
-export const INCIDENT_LABEL: Record<IncidentKind, string> = { down: "Panne", slow: "Lenteur", ssl: "Certificat SSL", feature: "Fonctionnalité" };
+export const INCIDENT_LABEL: Record<IncidentKind, string> = { down: "Panne", slow: "Lenteur", ssl: "Certificat SSL", feature: "Fonctionnalité", page: "Page", robot: "Robot de connexion" };
 
 export const dateOf = (s: Stamp): Date | undefined => s?.toDate?.();

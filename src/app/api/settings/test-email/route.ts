@@ -11,7 +11,7 @@ export async function POST(req: Request) {
   if (!caller.email) return fail("Ton compte n'a pas d'adresse e-mail.", 400);
   if (!caller.emailVerified) return fail("Vérifie d'abord ton adresse e-mail : clique sur le lien reçu à l'inscription.", 403);
   const resend = mailer();
-  if (!resend) return fail("L'envoi d'e-mails n'est pas encore configuré sur ce serveur.", 503);
+  if (!resend) return fail("L'envoi d'e-mails n'est pas encore configuré sur ce serveur. Ajoute la variable RESEND_API_KEY dans Render (Environment), puis redéploie.", 503);
   if (!(await allowOnce(`test-email-${caller.uid}`, 60))) return fail("Patiente une minute avant un nouvel e-mail de test.", 429);
 
   try {

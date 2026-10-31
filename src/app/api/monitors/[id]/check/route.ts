@@ -18,7 +18,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
 
   const db = adminDb();
   const now = new Date();
-  const out = await checkMonitor(mine.ref, mine.data, { db, resend: mailer(), recipient: makeRecipientResolver(db), now, forceSsl: true }, { lastManualCheckAt: Timestamp.fromDate(now) });
+  const out = await checkMonitor(mine.ref, mine.data, { db, resend: mailer(), recipient: makeRecipientResolver(db), now, forceSsl: true, forceCrawl: true, crawlBudget: new Map<string, number>() }, { lastManualCheckAt: Timestamp.fromDate(now) });
   return NextResponse.json({
     up: out.result.up,
     code: out.result.code,
@@ -27,6 +27,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     contentOk: out.result.contentOk,
     slow: out.slow,
     featuresDown: out.featuresDown,
+    crawl: out.crawl,
     sslLevel: out.ssl?.level ?? null,
     sslDaysLeft: out.ssl?.daysLeft ?? null,
   });

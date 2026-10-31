@@ -2,7 +2,7 @@
 // Protection : le serveur ne lit JAMAIS une adresse privée ou interne, ni directement, ni via un nom qui s'y résout, ni via une redirection.
 import { lookup } from "node:dns/promises";
 import tls from "node:tls";
-import { bodyHasText, daysUntil, describeFailure, isIpLiteral, isPrivateAddress, parseMonitorUrl, type ProbeError } from "@/lib/monitoring";
+import { bodyHasText, crawlLinks, daysUntil, describeFailure, isIpLiteral, isPrivateAddress, parseMonitorUrl, type ProbeError } from "@/lib/monitoring";
 
 export type ProbeResult = {
   up: boolean;
@@ -67,14 +67,14 @@ async function request(url: string, method: "HEAD" | "GET", signal: AbortSignal)
 }
 
 /** Lit le début de la page (1 Mo au plus) pour y chercher le texte attendu. */
-async function readText(res: Response): Promise<string> {
+async function readText(res: Response, limit = MAX_BODY_BYTES): Promise<string> {
   const reader = res.body?.getReader();
   if (!reader) return "";
   const decoder = new TextDecoder();
   let text = "";
   let total = 0;
   try {
-    while (total < MAX_BODY_BYTES) {
+    while (total < limit) {
       const { done, value } = await reader.read();
       if (done) break;
       total += value.length;
@@ -101,6 +101,8 @@ export type ProbeOptions = {
   expectStatus?: number | null;
   /** Une fonctionnalité est toujours contrôlée en GET (comme le ferait un visiteur). */
   getOnly?: boolean;
+  /** Pages découvertes : 401 et 403 veulent dire « existe, mais demande une connexion » : la page répond, ce n'est pas une panne. */
+  acceptProtected?: boolean;
 };
 
 async function probeOnce(url: string, options: ProbeOptions): Promise<ProbeResult> {
@@ -117,7 +119,7 @@ async function probeOnce(url: string, options: ProbeOptions): Promise<ProbeResul
       res = await request(url, "GET", signal);
     }
     const latencyMs = Math.round(performance.now() - started); // temps jusqu'à la réponse, avant la lecture de la page
-    let up = expectStatus ? res.status === expectStatus : res.status < 400;
+    let up = expectStatus ? res.status === expectStatus : res.status < 400 || (!!options.acceptProtected && (res.status === 401 || res.status === 403));
     let reason: string | null = up ? null : expectStatus ? `Réponse HTTP ${res.status} (attendu : ${expectStatus})` : describeFailure(res.status, null);
     let contentOk: boolean | null = null;
     if (expectText && up) {
@@ -157,6 +159,55 @@ export async function fetchText(url: string): Promise<{ text: string; finalUrl: 
   } catch {
     return null;
   }
+}
+
+/**
+ * Explore un site comme le ferait un visiteur : part de la page d'accueil, suit les liens du MÊME site sur `depth` niveaux
+ * (2 par défaut), 20 pages au plus. `ok` est faux si la page d'accueil n'a pas pu être lue (alors on ne touche à rien).
+ */
+export async function crawlSite(baseUrl: string, options: { maxPages?: number; depth?: number } = {}): Promise<{ ok: boolean; paths: string[] }> {
+  const maxPages = options.maxPages ?? 20;
+  const depth = options.depth ?? 2;
+  const deadline = Date.now() + 45_000;
+  const seen = new Set<string>();
+  const found: string[] = [];
+  let frontier: string[] = [baseUrl];
+  let homeOk = false;
+  for (let level = 0; level < depth && frontier.length && found.length < maxPages && Date.now() < deadline; level++) {
+    const pages: { ok: boolean; links: string[] }[] = new Array(frontier.length);
+    let next = 0;
+    await Promise.all(
+      Array.from({ length: Math.min(4, frontier.length) }, async () => {
+        while (next < frontier.length) {
+          const i = next++;
+          try {
+            const res = await request(frontier[i], "GET", AbortSignal.timeout(8000));
+            const isHtml = (res.headers.get("content-type") ?? "").toLowerCase().includes("html");
+            if (res.status >= 400 || !isHtml) {
+              void res.body?.cancel().catch(() => {});
+              pages[i] = { ok: res.status < 400, links: [] };
+            } else {
+              pages[i] = { ok: true, links: crawlLinks(await readText(res, 500_000), res.url || frontier[i]) };
+            }
+          } catch {
+            pages[i] = { ok: false, links: [] };
+          }
+        }
+      }),
+    );
+    if (level === 0) homeOk = pages[0]?.ok === true;
+    const upcoming: string[] = [];
+    for (const page of pages) {
+      for (const path of page.links) {
+        if (seen.has(path) || found.length >= maxPages) continue;
+        seen.add(path);
+        found.push(path);
+        upcoming.push(new URL(path, baseUrl).href);
+      }
+    }
+    frontier = upcoming;
+  }
+  return { ok: homeOk, paths: found };
 }
 
 export type CertResult = { authorized: boolean; daysLeft: number | null; expiresAt: Date | null; error: string | null };

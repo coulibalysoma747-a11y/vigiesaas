@@ -8,7 +8,7 @@ export function appUrl(): string {
   return (process.env.APP_URL || process.env.RENDER_EXTERNAL_URL || "").replace(/\/$/, "");
 }
 
-export type AlertKind = "down" | "up" | "slow" | "slow_ok" | "ssl" | "ssl_ok" | "feature_down" | "feature_up" | "test";
+export type AlertKind = "down" | "up" | "slow" | "slow_ok" | "ssl" | "ssl_ok" | "feature_down" | "feature_up" | "pages_down" | "pages_up" | "robot_down" | "robot_up" | "test";
 
 type AlertInput = {
   kind: AlertKind;
@@ -23,6 +23,8 @@ type AlertInput = {
   /** Pour « feature_down » et « feature_up » : la fonctionnalité concernée. */
   featureName?: string;
   featurePath?: string;
+  /** Pour « pages_down » et « pages_up » : adresses des pages découvertes par l'exploration automatique. */
+  pages?: string[];
   at: Date;
 };
 
@@ -110,6 +112,39 @@ export function buildAlert(input: AlertInput): { subject: string; text: string; 
       lines = [`${site} : la fonctionnalité « ${feature} » est de nouveau opérationnelle.`, a.downSeconds != null ? `Durée de la panne : ${formatDuration(a.downSeconds)}.` : ""];
       break;
     }
+    case "pages_down":
+    case "pages_up": {
+      const list = (a.pages ?? []).map((p) => p.replace(/[\u0000-\u001f\u007f]+/g, " ").slice(0, 80));
+      const shown = list.slice(0, 10).join(", ") + (list.length > 10 ? ` (et ${list.length - 10} autres)` : "");
+      const n = list.length;
+      const down = a.kind === "pages_down";
+      subject = down ? `Vigie SaaS : ${n} page${n > 1 ? "s" : ""} de ${a.name} ne répondent plus` : `Vigie SaaS : ${n} page${n > 1 ? "s" : ""} de ${a.name} répondent de nouveau`;
+      eyebrow = down ? "Pages en panne" : "Pages rétablies";
+      title = down ? `${n} page${n > 1 ? "s" : ""} de ${a.name} ne répondent plus` : `${n} page${n > 1 ? "s" : ""} de ${a.name} répondent de nouveau`;
+      color = down ? RED : GREEN;
+      lines = down
+        ? [`${site} : Vigie a exploré le site et ${n > 1 ? "ces pages, qui fonctionnaient, ne répondent plus" : "cette page, qui fonctionnait, ne répond plus"} : ${shown}.`, "Le reste du site peut continuer à répondre : sans cette alerte, la panne passerait inaperçue."]
+        : [`${site} : ${n > 1 ? "ces pages répondent de nouveau" : "cette page répond de nouveau"} : ${shown}.`];
+      break;
+    }
+    case "robot_down":
+      subject = `Vigie SaaS : le robot n'arrive plus à utiliser ${a.name}`;
+      eyebrow = "Robot de connexion : panne";
+      title = `L'application ${a.name} ne fonctionne plus pour un utilisateur connecté`;
+      color = RED;
+      lines = [
+        `${site} : le robot de Vigie s'est connecté avec ton compte de test et a constaté un problème.`,
+        a.reason ? `Constat : ${a.reason}.` : "",
+        "Un visiteur non connecté ne verrait rien d'anormal : c'est l'intérieur de l'application qui est touché.",
+      ];
+      break;
+    case "robot_up":
+      subject = `Vigie SaaS : le robot utilise de nouveau ${a.name} normalement`;
+      eyebrow = "Robot de connexion : rétabli";
+      title = `L'application ${a.name} refonctionne pour un utilisateur connecté`;
+      color = GREEN;
+      lines = [`${site} : le robot se connecte et parcourt l'application normalement.`, a.downSeconds != null ? `Durée du problème : ${formatDuration(a.downSeconds)}.` : ""];
+      break;
     case "ssl_ok":
       subject = `Vigie SaaS : certificat SSL de ${a.name} en règle`;
       eyebrow = "Certificat SSL en règle";
@@ -138,7 +173,9 @@ ${link ? `<p style="margin:20px 0 0"><a href="${escapeHtml(link)}" style="displa
 }
 
 export function mailer(): Resend | null {
-  return process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
+  // Une valeur collée dans Render peut contenir des guillemets ou des espaces : on nettoie.
+  const key = (process.env.RESEND_API_KEY ?? "").trim().replace(/^["']|["']$/g, "");
+  return key ? new Resend(key) : null;
 }
 
 export async function sendAlert(resend: Resend, to: string, a: AlertInput): Promise<void> {

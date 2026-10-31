@@ -388,6 +388,178 @@ export function extractLinks(html: string, pageUrl: string, max = 12): { name: s
   return found.slice(0, max).map(({ name, path }) => ({ name, path }));
 }
 
+// ───── Exploration automatique : Vigie découvre elle-même les pages d'un site et les teste toutes ─────
+
+export const CRAWL_MAX_PAGES = 20;
+export const CRAWL_MAX_PAGES_PER_USER = 60;
+export const CRAWL_DEPTH = 2;
+export const CRAWL_REDISCOVER_HOURS = 6;
+/** Une page qui n'est plus trouvée par ce nombre d'explorations de suite est oubliée. */
+export const CRAWL_FORGET_AFTER = 3;
+
+/** Empreinte courte et stable d'un texte (FNV-1a, 8 caractères) : sert de nom de champ sûr pour une page. */
+export function fnv1a(text: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16).padStart(8, "0");
+}
+
+export const pageKey = (path: string) => `p${fnv1a(path)}`;
+
+/** Chemin d'une page à explorer : même site, sans fichiers, sans « ?… » ni « # », sans « / » final ; null sinon. L'accueil (« / ») est exclu : c'est le site lui-même. */
+export function crawlPath(href: string, pageUrl: string): string | null {
+  const value = (href ?? "").trim();
+  if (!value || value.startsWith("#") || /^(mailto|tel|javascript|data|sms|whatsapp):/i.test(value)) return null;
+  let page: URL;
+  let target: URL;
+  try {
+    page = new URL(pageUrl);
+    target = new URL(value, page);
+  } catch {
+    return null;
+  }
+  if (target.origin !== page.origin) return null;
+  let path = target.pathname.replace(/\/{2,}/g, "/");
+  if (path.length > 1) path = path.replace(/\/$/, "");
+  if (path === "/" || path.length > 200 || ASSET.test(path) || /[\s\\\u0000-\u001f\u007f]/.test(path)) return null;
+  return path;
+}
+
+/** Tous les liens (même site) d'une page, sans doublon, dans l'ordre d'apparition. */
+export function crawlLinks(html: string, pageUrl: string): string[] {
+  const re = /<a\s[^>]*?href\s*=\s*(?:"([^"]*)"|'([^']*)')[^>]*>/gi;
+  const seen = new Set<string>();
+  const out: string[] = [];
+  let match: RegExpExecArray | null;
+  let guard = 0;
+  while ((match = re.exec(html)) && guard++ < 5000) {
+    const path = crawlPath(match[1] ?? match[2] ?? "", pageUrl);
+    if (path && !seen.has(path)) {
+      seen.add(path);
+      out.push(path);
+    }
+  }
+  return out;
+}
+
+/**
+ * Met à jour la liste des pages connues avec celles trouvées par la dernière exploration :
+ * les pages connues sont gardées (compteur « introuvable » remis à zéro si elles sont retrouvées, +1 sinon, oubliées à 3),
+ * les nouvelles s'ajoutent jusqu'à `maxPages`.
+ */
+export function mergeDiscovered(
+  previous: Record<string, { path: string; missing?: number }>,
+  found: string[],
+  maxPages = CRAWL_MAX_PAGES,
+): { pages: Record<string, { path: string; missing: number }>; added: string[]; dropped: string[] } {
+  const foundSet = new Set(found);
+  const pages: Record<string, { path: string; missing: number }> = {};
+  const added: string[] = [];
+  const dropped: string[] = [];
+  for (const [key, page] of Object.entries(previous)) {
+    const missing = foundSet.has(page.path) ? 0 : (page.missing ?? 0) + 1;
+    if (missing >= CRAWL_FORGET_AFTER) dropped.push(key);
+    else pages[key] = { path: page.path, missing };
+  }
+  for (const path of found) {
+    if (Object.keys(pages).length >= maxPages) break;
+    const key = pageKey(path);
+    if (!pages[key]) {
+      pages[key] = { path, missing: 0 };
+      added.push(key);
+    }
+  }
+  return { pages, added, dropped };
+}
+
+/**
+ * Évolution d'une page entre deux contrôles. Une page qui n'a JAMAIS répondu est un « lien cassé » (à signaler, pas une panne) ;
+ * une page qui marchait puis ne répond plus est une « panne » (alerte) ; une page réparée n'alerte que si elle avait déjà marché.
+ */
+export function pageStep(previous: { up?: boolean; everOk?: boolean } | undefined, up: boolean): "went_down" | "recovered" | "broken" | "none" {
+  if (!previous || previous.up === undefined) return up ? "none" : "broken";
+  if (previous.up && !up) return "went_down";
+  if (!previous.up && up) return previous.everOk ? "recovered" : "none";
+  return "none";
+}
+
+export function crawlDue(lastMs: number | null, nowMs: number, force = false): boolean {
+  return force || lastMs === null || nowMs - lastMs >= CRAWL_REDISCOVER_HOURS * 3_600_000 - 60_000;
+}
+
+/** Nombre de problèmes qui font passer un site « répond » en « partiel » : fonctionnalités en panne + pages découvertes qui ne répondent plus. */
+export const problemTotal = (featuresDown?: number | null, crawlDown?: number | null) => (featuresDown ?? 0) + (crawlDown ?? 0);
+
+// ───── Robot de connexion : un vrai navigateur se connecte avec un COMPTE DE TEST et visite l'intérieur de l'application ─────
+
+export const ROBOT_MAX_PAGES = 15;
+export const ROBOT_EVERY_MIN = 5;
+export const MAX_ROBOTS_PER_USER = 3;
+/** Un scénario confié à un exécuteur n'est pas redonné à un autre pendant ce délai. */
+export const ROBOT_LEASE_MIN = 4;
+
+export type RobotConfigInput = { enabled?: unknown; loginPath?: unknown; email?: unknown; password?: unknown };
+
+/** Réglages du robot saisis par l'utilisateur. Le mot de passe n'est jamais dans la configuration : il part dans le coffre chiffré. */
+export function normalizeRobotConfig(
+  baseUrl: string,
+  input: RobotConfigInput,
+  hasPassword: boolean,
+): { ok: true; config: { enabled: boolean; loginPath: string; email: string }; password: string | null } | { ok: false; error: string } {
+  const login = featureUrl(baseUrl, String(input.loginPath ?? "").trim() || "/connexion");
+  if (!login.ok) return { ok: false, error: `Page de connexion : ${login.error}` };
+  const email = String(input.email ?? "").trim();
+  if (email.length < 3 || email.length > 120 || /[\s\u0000-\u001f\u007f]/.test(email)) return { ok: false, error: "Saisis l'identifiant (e-mail) du compte de test." };
+  const raw = typeof input.password === "string" ? input.password : "";
+  if (raw.length > 200) return { ok: false, error: "Mot de passe trop long (200 caractères au plus)." };
+  const enabled = input.enabled === true;
+  if (enabled && !raw && !hasPassword) return { ok: false, error: "Saisis le mot de passe du compte de test." };
+  return { ok: true, config: { enabled, loginPath: login.path, email }, password: raw || null };
+}
+
+export type RobotPageResult = { path: string; status: number | null; ms: number | null; error: string | null };
+export type RobotReport = { loginOk: boolean; loginError: string | null; pages: RobotPageResult[] };
+
+const cleanText = (value: unknown, max: number): string | null => {
+  if (typeof value !== "string") return null;
+  const text = value.replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, max);
+  return text || null;
+};
+
+/** Rapport reçu de l'exécuteur : on ne fait confiance à rien (types, tailles, caractères). Renvoie null si le rapport est inutilisable. */
+export function sanitizeRobotReport(raw: unknown): RobotReport | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.loginOk !== "boolean") return null;
+  const pages: RobotPageResult[] = [];
+  for (const entry of Array.isArray(r.pages) ? r.pages.slice(0, 30) : []) {
+    const p = (entry ?? {}) as Record<string, unknown>;
+    const path = cleanText(p.path, 200);
+    if (!path || !path.startsWith("/")) continue;
+    const status = typeof p.status === "number" && Number.isInteger(p.status) && p.status >= 100 && p.status <= 599 ? p.status : null;
+    const ms = typeof p.ms === "number" && Number.isFinite(p.ms) && p.ms >= 0 && p.ms <= 120_000 ? Math.round(p.ms) : null;
+    pages.push({ path, status, ms, error: cleanText(p.error, 120) });
+  }
+  return { loginOk: r.loginOk, loginError: cleanText(r.loginError, 200), pages };
+}
+
+/**
+ * Verdict d'un passage du robot. Panne : le compte de test n'arrive pas à se connecter, ou une page de l'application répond en erreur
+ * (500 et plus, délai dépassé, session perdue, page d'erreur affichée). Une page 404 est un « lien cassé » : signalé, mais ce n'est pas une panne.
+ */
+export function robotVerdict(report: RobotReport): { ok: boolean; reason: string | null; failed: RobotPageResult[]; broken: RobotPageResult[] } {
+  if (!report.loginOk) return { ok: false, reason: `Connexion impossible : ${report.loginError ?? "le compte de test n'a pas pu se connecter"}`, failed: [], broken: [] };
+  const failed = report.pages.filter((p) => p.error !== null || p.status === null || p.status >= 500);
+  const broken = report.pages.filter((p) => !failed.includes(p) && (p.status === 404 || p.status === 410));
+  if (!failed.length) return { ok: true, reason: null, failed, broken };
+  const shown = failed.slice(0, 3).map((p) => `${p.path} (${p.error ?? `HTTP ${p.status}`})`).join(", ");
+  const more = failed.length > 3 ? ` et ${failed.length - 3} autre${failed.length - 3 > 1 ? "s" : ""}` : "";
+  return { ok: false, reason: `${failed.length} page${failed.length > 1 ? "s" : ""} de l'application en erreur : ${shown}${more}`, failed, broken };
+}
+
 /** « https://www.exemple.com/page » devient « exemple.com ». */
 export function shortHost(raw: string): string {
   const parsed = parseMonitorUrl(raw);

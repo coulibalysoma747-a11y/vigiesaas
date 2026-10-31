@@ -1,7 +1,10 @@
 // Tests de la logique de surveillance : node --test scripts/test-monitoring.mts (Node 22.18 ou plus récent)
 import assert from "node:assert/strict";
 import test from "node:test";
+import { decryptSecret, encryptSecret, vaultReady } from "../src/lib/robot-crypto.ts";
 import {
+  normalizeRobotConfig, robotVerdict, sanitizeRobotReport,
+  crawlDue, crawlLinks, crawlPath, fnv1a, mergeDiscovered, pageKey, pageStep, problemTotal,
   buildFeatureList, extractLinks, featureUrl, nameFromPath, normalizeExpectStatus, normalizeFeature, siteHealth,
   bodyHasText, dayDelta, dayKey, dayState, daysUntil, describeFailure, describeSlow, describeSsl, evalSlow, formatDuration, formatPct, isDue,
   isPrivateAddress, lastDayKeys, normalizeExpectText, normalizeInterval, normalizeMaxLatency, parseMonitorUrl, shortHost, sslChange, sslDue,
@@ -270,4 +273,156 @@ test("détection des pages : liens du même site seulement, sans fichiers, conne
   assert.equal(links.find((l) => l.path === "/connexion")?.name, "Se connecter");
   assert.equal(extractLinks(html, "pas une adresse").length, 0);
   assert.equal(extractLinks(html, "https://mon-saas.com/", 2).length, 2);
+});
+
+const SITE = "https://mon-saas.com/";
+
+test("exploration : empreinte stable, nom de champ sûr", () => {
+  assert.equal(fnv1a("/connexion"), fnv1a("/connexion"));
+  assert.notEqual(fnv1a("/connexion"), fnv1a("/paiement"));
+  assert.match(fnv1a("x"), /^[0-9a-f]{8}$/);
+  assert.match(pageKey("/a/b?x=1"), /^p[0-9a-f]{8}$/);
+});
+
+test("exploration : seules les pages du MÊME site sont gardées, sans fichiers, sans « ? » ni « # », sans « / » final", () => {
+  assert.equal(crawlPath("/connexion", SITE), "/connexion");
+  assert.equal(crawlPath("connexion/", "https://mon-saas.com/a/"), "/a/connexion");
+  assert.equal(crawlPath("/panier?x=1#haut", SITE), "/panier");
+  assert.equal(crawlPath("https://mon-saas.com/tarifs/", SITE), "/tarifs");
+  assert.equal(crawlPath("../b", "https://mon-saas.com/a/c/"), "/a/b");
+  for (const bad of ["", "#haut", "/", "//", "https://evil.com/x", "//evil.com/x", "https://sous.mon-saas.com/x", "http://mon-saas.com/x", "mailto:a@b.com", "javascript:alert(1)", "tel:123", "/logo.png", "/app.js", "/doc.pdf"]) {
+    assert.equal(crawlPath(bad, SITE), null, bad);
+  }
+  assert.equal(crawlPath("/" + "x".repeat(300), SITE), null);
+  assert.equal(crawlPath("/a b", SITE), "/a%20b"); // un espace dans un lien est encodé comme le ferait un navigateur
+});
+
+test("exploration : liens d'une page, sans doublon, dans l'ordre", () => {
+  const html = `<a href="/a">A</a><a href='/b?x=1'>B</a><a href="/a#fin">A bis</a><a href="https://evil.com/z">Z</a><a href="/img.png">I</a><a href="/c/">C</a><a name="ancre">sans lien</a>`;
+  assert.deepEqual(crawlLinks(html, SITE), ["/a", "/b", "/c"]);
+  assert.deepEqual(crawlLinks("", SITE), []);
+});
+
+test("exploration : fusion des pages connues et découvertes, oubli après 3 explorations sans la retrouver, plafond", () => {
+  const first = mergeDiscovered({}, ["/a", "/b", "/c"]);
+  assert.deepEqual(Object.values(first.pages).map((p) => p.path), ["/a", "/b", "/c"]);
+  assert.equal(first.added.length, 3);
+  let pages = first.pages;
+  let step = mergeDiscovered(pages, ["/a", "/c"]); // « /b » n'est plus trouvée une fois
+  assert.equal(step.pages[pageKey("/b")].missing, 1);
+  assert.equal(step.dropped.length, 0);
+  pages = step.pages;
+  step = mergeDiscovered(pages, ["/a", "/c"]);
+  pages = step.pages;
+  step = mergeDiscovered(pages, ["/a", "/c"]); // 3e fois : oubliée
+  assert.deepEqual(step.dropped, [pageKey("/b")]);
+  assert.ok(!(pageKey("/b") in step.pages));
+  step = mergeDiscovered(first.pages, ["/a", "/b"]); // retrouvée : le compteur repart à zéro
+  assert.equal(step.pages[pageKey("/b")].missing, 0);
+  const many = mergeDiscovered({}, Array.from({ length: 30 }, (_, i) => `/p${i}`), 20);
+  assert.equal(Object.keys(many.pages).length, 20);
+  const kept = mergeDiscovered({ [pageKey("/old")]: { path: "/old", missing: 0 } }, Array.from({ length: 30 }, (_, i) => `/p${i}`), 5);
+  assert.ok(pageKey("/old") in kept.pages); // une page déjà connue n'est jamais chassée par une nouvelle
+  assert.equal(Object.keys(kept.pages).length, 5);
+});
+
+test("exploration : lien cassé (jamais marché) ≠ panne (marchait avant) ; réparation sans alerte si jamais marché", () => {
+  assert.equal(pageStep(undefined, true), "none");
+  assert.equal(pageStep(undefined, false), "broken");
+  assert.equal(pageStep({}, false), "broken");
+  assert.equal(pageStep({ up: true, everOk: true }, false), "went_down");
+  assert.equal(pageStep({ up: false, everOk: true }, true), "recovered");
+  assert.equal(pageStep({ up: false, everOk: false }, true), "none"); // lien cassé réparé : pas d'alerte
+  assert.equal(pageStep({ up: true, everOk: true }, true), "none");
+  assert.equal(pageStep({ up: false, everOk: true }, false), "none"); // toujours en panne : pas de nouvelle alerte
+});
+
+test("exploration : redécouverte toutes les 6 heures, ou sur demande ; total des problèmes", () => {
+  const t = 1_000_000_000_000;
+  assert.equal(crawlDue(null, t), true);
+  assert.equal(crawlDue(t - 7 * 3_600_000, t), true);
+  assert.equal(crawlDue(t - 5 * 3_600_000, t), false);
+  assert.equal(crawlDue(t - 60_000, t, true), true);
+  assert.equal(problemTotal(2, 3), 5);
+  assert.equal(problemTotal(undefined, null), 0);
+  assert.equal(problemTotal(1, undefined), 1);
+});
+
+test("robot : réglages validés (page de connexion du même site, identifiant, mot de passe jamais dans la configuration)", () => {
+  const ok = normalizeRobotConfig("https://mon-saas.com", { enabled: true, loginPath: "connexion", email: " test@exemple.com ", password: "Secret123!" }, false);
+  assert.deepEqual(ok, { ok: true, config: { enabled: true, loginPath: "/connexion", email: "test@exemple.com" }, password: "Secret123!" });
+  assert.deepEqual(normalizeRobotConfig("https://mon-saas.com", { enabled: true, email: "t@e.fr" }, true), { ok: true, config: { enabled: true, loginPath: "/connexion", email: "t@e.fr" }, password: null }); // mot de passe déjà enregistré : conservé
+  assert.equal(normalizeRobotConfig("https://mon-saas.com", { enabled: true, email: "t@e.fr" }, false).ok, false); // activé sans mot de passe
+  assert.equal(normalizeRobotConfig("https://mon-saas.com", { enabled: false, email: "t@e.fr" }, false).ok, true); // désactivé : pas besoin de mot de passe
+  assert.equal(normalizeRobotConfig("https://mon-saas.com", { enabled: true, loginPath: "https://evil.com/login", email: "t@e.fr", password: "x" }, false).ok, false); // jamais un autre site
+  assert.equal(normalizeRobotConfig("https://mon-saas.com", { enabled: true, loginPath: "//evil.com", email: "t@e.fr", password: "x" }, false).ok, false);
+  assert.equal(normalizeRobotConfig("https://mon-saas.com", { enabled: true, email: "a", password: "x" }, false).ok, false);
+  assert.equal(normalizeRobotConfig("https://mon-saas.com", { enabled: true, email: "a b@c.fr", password: "x" }, false).ok, false);
+  assert.equal(normalizeRobotConfig("https://mon-saas.com", { enabled: true, email: "t@e.fr", password: "x".repeat(201) }, false).ok, false);
+});
+
+test("robot : le rapport de l'exécuteur n'est jamais cru sur parole (types, tailles, caractères)", () => {
+  assert.equal(sanitizeRobotReport(null), null);
+  assert.equal(sanitizeRobotReport("x"), null);
+  assert.equal(sanitizeRobotReport({ pages: [] }), null); // loginOk manquant
+  assert.equal(sanitizeRobotReport({ loginOk: "oui" }), null);
+  const r = sanitizeRobotReport({
+    loginOk: true, loginError: null,
+    pages: [
+      { path: "/app", status: 200, ms: 350.6, error: null },
+      { path: "pas-un-chemin", status: 200 }, // retiré
+      { path: "/x\n/y", status: 99999, ms: -5, error: "e".repeat(500) },
+      ...Array.from({ length: 50 }, (_, i) => ({ path: `/p${i}`, status: 200, ms: 1 })),
+    ],
+  });
+  assert.ok(r);
+  if (r) {
+    assert.equal(r.pages.length, 29); // 30 entrées lues au plus, dont une retirée (chemin invalide)
+    assert.deepEqual(r.pages[0], { path: "/app", status: 200, ms: 351, error: null });
+    assert.deepEqual(r.pages[1], { path: "/x /y", status: null, ms: null, error: "e".repeat(120) });
+  }
+});
+
+test("robot : verdict — connexion impossible, page en erreur, lien cassé (404) sans panne", () => {
+  const page = (path: string, status: number | null, error: string | null = null) => ({ path, status, ms: 100, error });
+  assert.deepEqual(robotVerdict({ loginOk: true, loginError: null, pages: [page("/app", 200), page("/app/paiements", 200)] }), { ok: true, reason: null, failed: [], broken: [] });
+  const noLogin = robotVerdict({ loginOk: false, loginError: "Connexion refusée : « Mot de passe incorrect »", pages: [] });
+  assert.equal(noLogin.ok, false);
+  assert.equal(noLogin.reason, "Connexion impossible : Connexion refusée : « Mot de passe incorrect »");
+  assert.match(robotVerdict({ loginOk: false, loginError: null, pages: [] }).reason ?? "", /n'a pas pu se connecter/);
+  const err = robotVerdict({ loginOk: true, loginError: null, pages: [page("/app", 200), page("/app/retraits", 500), page("/app/factures", null, "Délai dépassé"), page("/app/ancien", 404)] });
+  assert.equal(err.ok, false);
+  assert.equal(err.reason, "2 pages de l'application en erreur : /app/retraits (HTTP 500), /app/factures (Délai dépassé)");
+  assert.deepEqual(err.broken.map((p) => p.path), ["/app/ancien"]);
+  const onlyBroken = robotVerdict({ loginOk: true, loginError: null, pages: [page("/app", 200), page("/app/ancien", 404)] });
+  assert.equal(onlyBroken.ok, true); // un 404 n'est pas une panne
+  assert.equal(onlyBroken.broken.length, 1);
+  const many = robotVerdict({ loginOk: true, loginError: null, pages: ["/a", "/b", "/c", "/d", "/e"].map((p) => page(p, 503)) });
+  assert.match(many.reason ?? "", /5 pages .* et 2 autres$/);
+});
+
+test("coffre : chiffrement AES-256-GCM, rien d'illisible modifiable, inutilisable sans la bonne clé", () => {
+  const saved = process.env.ROBOT_ENC_KEY;
+  try {
+    delete process.env.ROBOT_ENC_KEY;
+    assert.equal(vaultReady(), false);
+    assert.throws(() => encryptSecret("x"));
+    process.env.ROBOT_ENC_KEY = "a".repeat(64);
+    assert.equal(vaultReady(), true);
+    const blob = encryptSecret("Mot de passe de test é€!");
+    assert.ok(!blob.includes("Mot de passe"));
+    assert.equal(decryptSecret(blob), "Mot de passe de test é€!");
+    assert.notEqual(encryptSecret("x"), encryptSecret("x")); // vecteur d'initialisation différent à chaque fois
+    const parts = blob.split(".");
+    parts[3] = Buffer.from("autre chose").toString("base64");
+    assert.throws(() => decryptSecret(parts.join("."))); // contenu modifié : refusé
+    assert.throws(() => decryptSecret("n'importe quoi"));
+    process.env.ROBOT_ENC_KEY = "b".repeat(64);
+    assert.throws(() => decryptSecret(blob)); // mauvaise clé : illisible
+    process.env.ROBOT_ENC_KEY = "trop court";
+    assert.equal(vaultReady(), false);
+  } finally {
+    if (saved === undefined) delete process.env.ROBOT_ENC_KEY;
+    else process.env.ROBOT_ENC_KEY = saved;
+  }
 });

@@ -4,6 +4,8 @@ Surveillance de sites par e-mail + brocante des projets SaaS abandonnés.
 
 ## Ce que fait l'application
 - **Mes sites** : chaque site est contrôlé automatiquement (5, 10, 30 ou 60 minutes au choix). Temps de réponse mesuré, disponibilité sur 30 jours, barres d'historique, pause / reprise, « Vérifier maintenant ».
+- **Exploration automatique** (activée par défaut) : Vigie explore elle-même le site à partir de l'accueil (liens du même site, 2 niveaux, 20 pages au plus, refait toutes les 6 heures) et teste **chaque page découverte à chaque contrôle**. Une page qui marchait et ne répond plus déclenche un incident et UNE alerte groupée ; une page qui n'a jamais répondu est signalée comme « lien cassé » sans alerte ; une page qui demande une connexion (401/403) est marquée « protégée ». Aucune adresse à saisir. Limite : Vigie ne voit que ce qui est accessible sans se connecter.
+- **Robot de connexion** (facultatif, site par site) : un vrai navigateur (Chromium, lancé par GitHub Actions) se connecte à l'application avec un **compte de test** créé par le propriétaire du site, puis visite jusqu'à 15 pages de l'intérieur (tableau de bord, paiements…) toutes les 5 minutes. Connexion impossible, page en erreur (500, délai dépassé, session perdue, page d'erreur affichée) : incident + UNE alerte groupée ; un lien cassé (404) est signalé sans alerte. Le robot ne clique sur aucun bouton (hors « se connecter »), ne se déconnecte jamais, ne tape les identifiants que sur le site surveillé et refuse les adresses privées. Le mot de passe de test est chiffré (AES-256-GCM) dans un coffre que le navigateur ne peut jamais lire. **Conseil : un compte de test sans droits importants et sans vraies données.**
 - **Fonctionnalités d'un site** (jusqu'à 8 par site, 40 par compte) : connexion, paiement, une API… Chaque fonctionnalité est une adresse du MÊME site, contrôlée à part (code de réponse attendu et texte attendu facultatifs). Si une seule tombe, le site passe en **« Partiel »**, un incident s'ouvre et l'alerte part, même si la page d'accueil répond. Un bouton « Détecter les pages du site » propose les pages importantes à partir des liens de l'accueil.
 - **Contrôles avancés** (facultatifs, site par site) :
   - **Contenu de la page** : un texte qui doit apparaître ; s'il manque (page vide, erreur), le site est déclaré hors ligne même s'il répond.
@@ -18,10 +20,11 @@ Surveillance de sites par e-mail + brocante des projets SaaS abandonnés.
 - Next.js sur Render (offre gratuite)
 - Firebase Auth + Firestore (offre Spark)
 - Resend (e-mails)
-- GitHub Actions (déclencheur toutes les 5 minutes)
+- GitHub Actions (déclencheur toutes les 5 minutes + robot de connexion)
 
 ## Variables d'environnement
 Voir `.env.local.example`. En plus : `ALERT_FROM` (facultatif, expéditeur des alertes). `APP_URL` n'est pas nécessaire sur Render (`RENDER_EXTERNAL_URL` est fourni).
+Robot de connexion : `ROBOT_SECRET` (mot de passe du robot, même valeur sur Render ET dans le secret GitHub) et `ROBOT_ENC_KEY` (clé de chiffrement des mots de passe de test : 64 caractères hexadécimaux, **sur Render seulement**, jamais sur GitHub). Sans elles, le robot est simplement inactif.
 
 ## Démarrage local
 1. Copier `.env.local.example` en `.env.local` et remplir les valeurs.
@@ -41,5 +44,8 @@ Sans ces règles, l'ancien comportement reste ouvert (un utilisateur pourrait é
 3. Dans Firebase > Authentication > Paramètres > Domaines autorisés : ajouter le domaine Render (ex. `vigiesaas.onrender.com`).
 4. Sur GitHub (Settings > Secrets > Actions) : `CRON_SECRET` (même valeur) et `APP_URL` (ex. `https://vigiesaas.onrender.com`). L'onglet Actions montre si le déclencheur réussit ; il réveille aussi le service gratuit.
 5. **Alertes vers les utilisateurs** : sans domaine vérifié chez Resend, l'expéditeur de test (`onboarding@resend.dev`) n'écrit qu'au propriétaire du compte Resend. Vérifier un domaine, puis définir `ALERT_FROM`.
+
+6. **Robot de connexion** : ajouter `ROBOT_SECRET` et `ROBOT_ENC_KEY` dans Render, le secret GitHub `ROBOT_SECRET` (même valeur que dans Render) ; `APP_URL` existe déjà. Le workflow `.github/workflows/robot.yml` se lance tout seul (onglet Actions > « Vigie robot » > « Run workflow » pour un essai immédiat). Les tâches programmées gratuites de GitHub peuvent démarrer avec quelques minutes de retard : c'est normal.
+   Essai sur son ordinateur : `robot/run.mjs` accepte `ROBOT_ALLOW_PRIVATE=1` (adresses locales) et `ROBOT_BROWSER_PATH` (navigateur installé) ; ne jamais les définir sur GitHub.
 
 L'offre gratuite de Render s'endort après 15 minutes sans visite ; le déclencheur toutes les 5 minutes la réveille.

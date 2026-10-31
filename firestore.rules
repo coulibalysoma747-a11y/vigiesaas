@@ -44,6 +44,11 @@ service cloud.firestore {
       allow delete: if request.auth != null && request.auth.uid == resource.data.userId;
     }
 
+    // Coffre des mots de passe de test du robot : JAMAIS lisible ni modifiable depuis un navigateur (serveur seulement).
+    match /robotSecrets/{id} {
+      allow read, write: if false;
+    }
+
     // Tout le reste (limites de fréquence, etc.) : serveur seulement.
     match /{document=**} {
       allow read, write: if false;

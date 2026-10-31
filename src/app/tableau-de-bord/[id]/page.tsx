@@ -5,7 +5,9 @@ import { useParams, useRouter } from "next/navigation";
 import { collection, doc, onSnapshot, query, where } from "firebase/firestore";
 import { useAuth } from "@/components/AuthProvider";
 import { ChecksPanel } from "@/components/ChecksPanel";
+import { CrawlPanel } from "@/components/CrawlPanel";
 import { FeaturesPanel } from "@/components/FeaturesPanel";
+import { RobotPanel } from "@/components/RobotPanel";
 import { Icon } from "@/components/Icon";
 import { StatusPill } from "@/components/StatusDot";
 import { UptimeRibbon } from "@/components/UptimeRibbon";
@@ -13,7 +15,7 @@ import { api } from "@/lib/api-client";
 import { db } from "@/lib/firebase";
 import { INTERVALS, describeFailure, describeSsl, formatDuration, formatPct, summarize, type ProbeError, type SslLevel } from "@/lib/monitoring";
 import { ago } from "@/lib/safe-url";
-import { INCIDENT_LABEL, dateOf, type Incident, type Monitor } from "@/lib/types";
+import { INCIDENT_LABEL, dateOf, problemCount, type Incident, type Monitor } from "@/lib/types";
 
 export default function MonitorDetail() {
   const { id } = useParams<{ id: string }>();
@@ -82,7 +84,7 @@ export default function MonitorDetail() {
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
                 <h1 className="truncate font-head text-headline-sm font-semibold text-on-surface">{monitor.name}</h1>
-                {paused ? <span className="rounded-full bg-surface-container px-2.5 py-1 text-label-sm font-bold text-text-muted">En pause</span> : <StatusPill status={monitor.lastStatus} degraded={(monitor.featuresDown ?? 0) > 0} />}
+                {paused ? <span className="rounded-full bg-surface-container px-2.5 py-1 text-label-sm font-bold text-text-muted">En pause</span> : <StatusPill status={monitor.lastStatus} degraded={problemCount(monitor) > 0} />}
                 {monitor.lastCode ? <span className="rounded-full bg-surface-container px-2 py-0.5 text-label-sm font-bold text-on-surface-variant">HTTP {monitor.lastCode}</span> : null}
               </div>
               <a href={monitor.url} target="_blank" rel="noopener noreferrer" className="block truncate text-body-sm text-primary-container hover:text-primary">{monitor.url} ↗</a>
@@ -120,8 +122,8 @@ export default function MonitorDetail() {
             className="btn-primary"
             disabled={!!busy || paused}
             onClick={() => run("check", async () => {
-              const r = await api<{ up: boolean; latencyMs: number | null; reason: string | null; slow: boolean; featuresDown: number; sslLevel: SslLevel | null; sslDaysLeft: number | null }>(`/api/monitors/${id}/check`, { method: "POST" });
-              const extras = [r.up && r.slow ? "Site lent." : "", r.featuresDown ? `${r.featuresDown} fonctionnalité${r.featuresDown > 1 ? "s" : ""} en panne.` : "", r.sslLevel ? `${describeSsl(r.sslLevel, r.sslDaysLeft)}.` : ""].filter(Boolean).join(" ");
+              const r = await api<{ up: boolean; latencyMs: number | null; reason: string | null; slow: boolean; featuresDown: number; crawl: { total: number; down: number; broken: number } | null; sslLevel: SslLevel | null; sslDaysLeft: number | null }>(`/api/monitors/${id}/check`, { method: "POST" });
+              const extras = [r.up && r.slow ? "Site lent." : "", r.featuresDown ? `${r.featuresDown} fonctionnalité${r.featuresDown > 1 ? "s" : ""} en panne.` : "", r.crawl ? `${r.crawl.total} page${r.crawl.total > 1 ? "s" : ""} explorée${r.crawl.total > 1 ? "s" : ""}${r.crawl.down ? `, ${r.crawl.down} en panne` : ""}${r.crawl.broken ? `, ${r.crawl.broken} lien${r.crawl.broken > 1 ? "s" : ""} cassé${r.crawl.broken > 1 ? "s" : ""}` : ""}.` : "",r.sslLevel ? `${describeSsl(r.sslLevel, r.sslDaysLeft)}.` : ""].filter(Boolean).join(" ");
               return `${r.up ? `En ligne : ${r.latencyMs} ms.` : `Hors ligne : ${r.reason ?? "pas de réponse"}.`} ${extras}`.trim();
             })}
           >
@@ -156,6 +158,8 @@ export default function MonitorDetail() {
         {notice && <p role="status" className="mt-3 text-body-sm font-medium text-primary">{notice}</p>}
       </div>
 
+      <CrawlPanel key={`c-${monitor.id}`} monitor={monitor} onNotice={setNotice} />
+      <RobotPanel key={`r-${monitor.id}`} monitor={monitor} onNotice={setNotice} />
       <FeaturesPanel key={`f-${monitor.id}`} monitor={monitor} onNotice={setNotice} />
       <ChecksPanel key={monitor.id} monitor={monitor} onNotice={setNotice} />
 

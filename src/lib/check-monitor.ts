@@ -5,11 +5,11 @@ import type { Resend } from "resend";
 import { adminAuth } from "@/lib/firebase-admin";
 import { sendAlert, type AlertKind } from "@/lib/alerts";
 import {
-  dayDelta, describeSlow, describeSsl, evalSlow, featureUrl, MAX_FEATURES_PER_MONITOR, normalizeExpectText, normalizeMaxLatency, sslChange, sslDue, sslLevel,
-  staleDayKeys, transition,
+  CRAWL_DEPTH, CRAWL_MAX_PAGES, CRAWL_MAX_PAGES_PER_USER, crawlDue, dayDelta, describeSlow, describeSsl, evalSlow, featureUrl, MAX_FEATURES_PER_MONITOR,
+  mergeDiscovered, normalizeExpectText, normalizeMaxLatency, pageStep, sslChange, sslDue, sslLevel, staleDayKeys, transition,
   type Days, type Feature, type SslLevel,
 } from "@/lib/monitoring";
-import { checkCertificate, probe, type ProbeResult } from "@/lib/safe-fetch";
+import { checkCertificate, crawlSite, probe, type ProbeResult } from "@/lib/safe-fetch";
 
 export type MonitorDoc = {
   userId: string;
@@ -34,7 +34,34 @@ export type MonitorDoc = {
   features?: Feature[];
   featureState?: Record<string, { up?: boolean; incidentId?: string | null; changedAt?: Timestamp | null } | undefined>;
   featuresDown?: number;
+  /** Exploration automatique (activée par défaut) : pages découvertes par Vigie, testées à chaque passage. */
+  autoCrawl?: boolean;
+  crawlPages?: Record<string, CrawlPageState | undefined>;
+  crawlDiscoveredAt?: Timestamp | null;
+  crawlDown?: number;
+  robot?: RobotState;
   days?: Days;
+};
+
+/** Robot de connexion : réglages (le mot de passe est dans le coffre chiffré `robotSecrets`, jamais ici) et dernier résultat. */
+export type RobotState = {
+  enabled?: boolean;
+  loginPath?: string;
+  email?: string;
+  hasPassword?: boolean;
+  lastRunAt?: Timestamp | null;
+  leaseUntil?: Timestamp | null;
+  ok?: boolean | null;
+  incidentId?: string | null;
+  changedAt?: Timestamp | null;
+};
+
+export type CrawlPageState = {
+  path: string;
+  up?: boolean;
+  everOk?: boolean;
+  missing?: number;
+  incidentId?: string | null;
 };
 
 export type Recipient = { email: string | null; verified: boolean; enabled: boolean };
@@ -65,6 +92,10 @@ export type CheckContext = {
   now: Date;
   /** « Vérifier maintenant » : contrôle aussi le certificat sans attendre les 12 heures. */
   forceSsl?: boolean;
+  /** « Vérifier maintenant » : relance aussi l'exploration du site sans attendre les 6 heures. */
+  forceCrawl?: boolean;
+  /** Pages que chaque compte a encore le droit de faire tester pendant ce passage (plafond par compte, partagé entre ses sites). */
+  crawlBudget?: Map<string, number>;
 };
 
 export type CheckOutcome = {
@@ -75,10 +106,12 @@ export type CheckOutcome = {
   slow: boolean;
   /** Nombre de fonctionnalités en panne (le site peut répondre alors qu'une fonction est cassée). */
   featuresDown: number;
+  /** Exploration automatique : pages testées, pages qui marchaient et ne répondent plus, liens cassés (n'ont jamais répondu). */
+  crawl: { total: number; down: number; broken: number } | null;
 };
 
-type IncidentKind = "down" | "slow" | "ssl" | "feature";
-type Notice = { kind: AlertKind; reason?: string | null; downSeconds?: number | null; critical?: boolean; featureName?: string; featurePath?: string };
+type IncidentKind = "down" | "slow" | "ssl" | "feature" | "page";
+type Notice = { kind: AlertKind; reason?: string | null; downSeconds?: number | null; critical?: boolean; featureName?: string; featurePath?: string; pages?: string[] };
 
 const FEATURE_CONCURRENCY = 4;
 
@@ -234,6 +267,87 @@ export async function checkMonitor(ref: DocumentReference, m: MonitorDoc, ctx: C
     featuresDown = m.featuresDown ?? 0;
   }
 
+  // 5. Exploration automatique : Vigie découvre elle-même les pages du site (toutes les 6 h, ou sur demande) et les teste TOUTES à chaque passage.
+  let crawl: CheckOutcome["crawl"] = null;
+  if (m.autoCrawl !== false && result.error === null) {
+    const budgetLeft = ctx.crawlBudget ? (ctx.crawlBudget.get(m.userId) ?? CRAWL_MAX_PAGES_PER_USER) : CRAWL_MAX_PAGES;
+    const cap = Math.max(0, Math.min(CRAWL_MAX_PAGES, budgetLeft));
+    const pages: Record<string, CrawlPageState> = {};
+    for (const [key, page] of Object.entries(m.crawlPages ?? {})) if (page?.path) pages[key] = { ...page };
+
+    if (cap > 0 && crawlDue(m.crawlDiscoveredAt?.toMillis?.() ?? null, now.getTime(), ctx.forceCrawl)) {
+      const found = await crawlSite(m.url, { maxPages: cap, depth: CRAWL_DEPTH });
+      if (found.ok) {
+        const merged = mergeDiscovered(pages, found.paths, cap);
+        for (const key of merged.dropped) {
+          update[`crawlPages.${key}`] = FieldValue.delete();
+          delete pages[key];
+        }
+        for (const [key, page] of Object.entries(merged.pages)) {
+          pages[key] = { ...(pages[key] ?? {}), path: page.path, missing: page.missing };
+          update[`crawlPages.${key}.path`] = page.path;
+          update[`crawlPages.${key}.missing`] = page.missing;
+        }
+        update.crawlDiscoveredAt = at;
+      }
+    }
+
+    const entries = Object.entries(pages).slice(0, cap);
+    ctx.crawlBudget?.set(m.userId, Math.max(0, budgetLeft - entries.length));
+    const tested = await mapPool(entries, FEATURE_CONCURRENCY, async ([key, page]) => {
+      const target = featureUrl(m.url, page.path);
+      if (!target.ok) return null;
+      return { key, page, r: await probe(target.url, { getOnly: true, acceptProtected: true }) };
+    });
+
+    let total = 0;
+    let down = 0;
+    let broken = 0;
+    let opened = 0;
+    const wentDown: string[] = [];
+    const recovered: string[] = [];
+    for (const item of tested) {
+      if (!item) continue;
+      const { key, page, r } = item;
+      const step = pageStep(page, r.up);
+      const everOk = !!page.everOk || r.up;
+      const base = `crawlPages.${key}`;
+      update[`${base}.up`] = r.up;
+      update[`${base}.protected`] = r.up && (r.code === 401 || r.code === 403);
+      update[`${base}.everOk`] = everOk;
+      update[`${base}.code`] = r.code;
+      update[`${base}.latencyMs`] = r.latencyMs;
+      update[`${base}.reason`] = r.reason;
+      update[`${base}.checkedAt`] = at;
+      total += 1;
+      if (!r.up) {
+        if (everOk) down += 1;
+        else broken += 1;
+      }
+      if (step === "went_down") {
+        wentDown.push(page.path);
+        if (opened < 5) {
+          // Au plus 5 incidents par passage : une panne générale ne doit pas noyer la liste.
+          update[`${base}.incidentId`] = await openIncident("page", `${page.path} : ${r.reason ?? "ne répond plus"}`, { featureName: page.path, featurePath: page.path });
+          opened += 1;
+        }
+        update[`${base}.changedAt`] = at;
+      } else if (step === "recovered") {
+        recovered.push(page.path);
+        if (page.incidentId) await closeIncident(page.incidentId);
+        update[`${base}.incidentId`] = null;
+        update[`${base}.changedAt`] = at;
+      }
+    }
+    // Une seule alerte groupée par passage, même si plusieurs pages tombent ensemble.
+    if (wentDown.length) notices.push({ kind: "pages_down", pages: wentDown });
+    if (recovered.length) notices.push({ kind: "pages_up", pages: recovered });
+    update.crawlTotal = total;
+    update.crawlDown = down;
+    update.crawlBroken = broken;
+    crawl = { total, down, broken };
+  }
+
   await ref.update(update);
 
   // Alertes : après l'enregistrement, et une alerte qui échoue ne casse jamais le contrôle.
@@ -255,5 +369,5 @@ export async function checkMonitor(ref: DocumentReference, m: MonitorDoc, ctx: C
       console.error("destinataire introuvable :", e instanceof Error ? e.message : e);
     }
   }
-  return { result, change: change === "none" ? "none" : change === "recovered" ? "up" : "down", alerted, ssl, slow: slow.isSlow, featuresDown };
+  return { result, change: change === "none" ? "none" : change === "recovered" ? "up" : "down", alerted, ssl, slow: slow.isSlow, featuresDown, crawl };
 }

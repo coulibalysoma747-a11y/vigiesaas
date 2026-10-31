@@ -1,0 +1,32 @@
+name: Vigie robot
+# Robot de connexion : un vrai navigateur se connecte avec le compte de test de chaque site et visite l'intérieur de l'application.
+# GitHub lance cette tâche au mieux toutes les 5 minutes (parfois plus tard : c'est le fonctionnement des tâches programmées gratuites).
+# Les journaux de ce dépôt public sont publics : le robot n'y écrit jamais un mot de passe.
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vigie-robot
+  cancel-in-progress: false
+
+jobs:
+  robot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    container:
+      image: mcr.microsoft.com/playwright:v1.49.1-jammy
+    steps:
+      - uses: actions/checkout@v4
+      - name: Installer le robot
+        working-directory: robot
+        run: npm ci --omit=dev
+      - name: Lancer le robot
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          ROBOT_SECRET: ${{ secrets.ROBOT_SECRET }}
+        run: node robot/run.mjs

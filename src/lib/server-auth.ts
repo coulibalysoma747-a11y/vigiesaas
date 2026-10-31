@@ -1,4 +1,5 @@
 // Identification de l'appelant des routes /api (jeton Firebase envoyé par le navigateur). Serveur seulement.
+import { createHash, timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 import { adminAuth, adminDb } from "@/lib/firebase-admin";
 
@@ -19,6 +20,18 @@ export async function requireCaller(req: Request): Promise<Caller | NextResponse
   } catch {
     return fail("Session expirée : reconnecte-toi.", 401);
   }
+}
+
+/**
+ * Protège une route réservée à une machine (le robot) par un mot de passe partagé, lu dans la variable d'environnement `envName`.
+ * Sans cette variable sur le serveur, la route reste FERMÉE (503), jamais ouverte à tout le monde. Renvoie null si l'appel est autorisé.
+ */
+export function guardSecret(req: Request, envName: string): NextResponse | null {
+  const secret = process.env[envName];
+  if (!secret) return fail(`${envName} non configuré sur le serveur.`, 503);
+  const given = createHash("sha256").update(req.headers.get("authorization") ?? "").digest();
+  const expected = createHash("sha256").update(`Bearer ${secret}`).digest();
+  return timingSafeEqual(given, expected) ? null : fail("unauthorized", 401);
 }
 
 /** Charge un site SEULEMENT s'il appartient à l'appelant (sinon « introuvable », jamais « interdit », pour ne rien révéler). */

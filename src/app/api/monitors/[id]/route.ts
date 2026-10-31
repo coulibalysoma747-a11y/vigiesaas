@@ -2,7 +2,11 @@ import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
 import { FieldValue, Timestamp } from "firebase-admin/firestore";
 import { adminDb } from "@/lib/firebase-admin";
-import { MAX_FEATURES_PER_USER, buildFeatureList, normalizeExpectText, normalizeInterval, normalizeMaxLatency } from "@/lib/monitoring";
+import {
+  MAX_FEATURES_PER_USER, MAX_ROBOTS_PER_USER, buildFeatureList, normalizeExpectText, normalizeInterval, normalizeMaxLatency, normalizeRobotConfig,
+  type RobotConfigInput,
+} from "@/lib/monitoring";
+import { encryptSecret, vaultReady } from "@/lib/robot-crypto";
 import { fail, ownMonitor, requireCaller } from "@/lib/server-auth";
 
 export const dynamic = "force-dynamic";
@@ -25,6 +29,10 @@ export async function PATCH(req: Request, ctx: Ctx) {
   if (body && "intervalMin" in body) update.intervalMin = normalizeInterval(body.intervalMin);
   if (typeof body?.name === "string" && body.name.trim()) update.name = body.name.trim().slice(0, 80);
   if (body && "expectText" in body) update.expectText = normalizeExpectText(body.expectText);
+  if (typeof body?.autoCrawl === "boolean") {
+    update.autoCrawl = body.autoCrawl;
+    if (body.autoCrawl) update.crawlDiscoveredAt = null; // exploration au prochain passage
+  }
   if (body && "maxLatencyMs" in body) {
     update.maxLatencyMs = normalizeMaxLatency(body.maxLatencyMs);
     update.slowStreak = 0;
@@ -57,6 +65,36 @@ export async function PATCH(req: Request, ctx: Ctx) {
     update.featuresDown = built.features.filter((f) => mine.data.featureState?.[f.id]?.up === false).length;
   }
 
+  // Robot de connexion : réglages dans le site, mot de passe de test dans le coffre chiffré `robotSecrets` (jamais lisible par le navigateur).
+  if (body && "robot" in body) {
+    const input = (body.robot ?? {}) as RobotConfigInput & { remove?: unknown };
+    const db = adminDb();
+    const vaultRef = db.collection("robotSecrets").doc(id);
+    if (input.remove === true) {
+      await vaultRef.delete().catch(() => {});
+      update.robot = FieldValue.delete();
+    } else if (input.enabled === false && input.email === undefined && input.password === undefined) {
+      update["robot.enabled"] = false;
+    } else {
+      const hasPassword = !!(await vaultRef.get()).data()?.passwordEnc;
+      const parsed = normalizeRobotConfig(mine.data.url, input, hasPassword);
+      if (!parsed.ok) return fail(parsed.error, 400);
+      if (parsed.config.enabled) {
+        const active = await db.collection("monitors").where("userId", "==", caller.uid).where("robot.enabled", "==", true).get();
+        if (active.docs.filter((d) => d.id !== id).length >= MAX_ROBOTS_PER_USER) return fail(`Tu as atteint la limite de ${MAX_ROBOTS_PER_USER} robots de connexion.`, 409);
+      }
+      if (parsed.password) {
+        if (!vaultReady()) return fail("Le coffre à mots de passe n'est pas encore configuré sur ce serveur (variable ROBOT_ENC_KEY).", 503);
+        await vaultRef.set({ userId: caller.uid, passwordEnc: encryptSecret(parsed.password), updatedAt: Timestamp.now() });
+      }
+      update["robot.enabled"] = parsed.config.enabled;
+      update["robot.loginPath"] = parsed.config.loginPath;
+      update["robot.email"] = parsed.config.email;
+      update["robot.hasPassword"] = hasPassword || !!parsed.password;
+      update["robot.leaseUntil"] = null;
+    }
+  }
+
   if (!Object.keys(update).length) return fail("Rien à modifier.", 400);
   await mine.ref.update(update);
   return NextResponse.json({ ok: true });
@@ -74,6 +112,7 @@ export async function DELETE(req: Request, ctx: Ctx) {
   const incidents = await db.collection("incidents").where("monitorId", "==", id).where("userId", "==", caller.uid).limit(450).get();
   const batch = db.batch();
   incidents.docs.forEach((d) => batch.delete(d.ref));
+  batch.delete(db.collection("robotSecrets").doc(id)); // le mot de passe de test disparaît avec le site
   batch.delete(mine.ref);
   await batch.commit();
   return NextResponse.json({ ok: true });

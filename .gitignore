@@ -48,3 +48,6 @@ sa-minified.txt
 next-env.d.ts
 
 .vercel
+
+# robot de connexion
+robot/node_modules
