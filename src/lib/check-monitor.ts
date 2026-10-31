@@ -184,6 +184,12 @@ export async function checkMonitor(ref: DocumentReference, m: MonitorDoc, ctx: C
     update.lastChangedAt = at;
     update.lastReminderAt = at;
     notices.push({ kind: "down", reason: result.reason });
+  } else if (change === "none" && !result.up && !m.openIncidentId) {
+    // Site déjà « hors ligne » mais sans incident (panne antérieure à la fonction, ou incident perdu) : chaque panne doit avoir son incident.
+    update.openIncidentId = await openIncident("down", result.reason ?? "Pas de réponse");
+    if (!m.lastChangedAt) update.lastChangedAt = at;
+    update.lastReminderAt = at;
+    notices.push({ kind: "down", reason: result.reason });
   } else if (change === "none" && !result.up && m.vigilance === true && m.openIncidentId) {
     // Mode vigilance : la panne continue, un rappel part toutes les 30 minutes.
     const downSince = m.lastChangedAt?.toMillis?.() ?? null;
