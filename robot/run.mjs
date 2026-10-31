@@ -72,9 +72,12 @@ async function api(path, init = {}) {
         signal: AbortSignal.timeout(90_000), // le site gratuit de Render peut mettre ~1 minute à se réveiller
       });
       if (res.ok) return await res.json();
-      lastError = `HTTP ${res.status}`;
+      const said = (await res.text().catch(() => "")).replace(/\s+/g, " ").slice(0, 120);
+      lastError = `HTTP ${res.status}${said ? ` (${said})` : ""}`;
       lastStatus = res.status;
-      if ([401, 403, 404, 503].includes(res.status)) break; // inutile de réessayer
+      // Inutile de réessayer : mauvais mot de passe, route absente, ou serveur qui dit lui-même ne pas être configuré.
+      // Un autre 503 vient de Render qui se réveille ou redémarre : on réessaie.
+      if ([401, 403, 404].includes(res.status) || (res.status === 503 && /non configur/i.test(said))) break;
     } catch (e) {
       lastError = String(e?.message || e).slice(0, 80);
     }
@@ -187,7 +190,7 @@ async function main() {
   } catch (e) {
     // 503 = ROBOT_SECRET pas encore réglé sur le serveur ; 404 = serveur pas encore mis à jour : pas une panne, on reste silencieux.
     if (e.status === 503 || e.status === 404) {
-      console.log("Le serveur Vigie n'est pas encore prêt pour le robot (variables ROBOT_SECRET / ROBOT_ENC_KEY ou mise en ligne manquantes) : rien à faire.");
+      console.log(`Le serveur Vigie (${hostOf(APP_URL)}) n'est pas encore prêt pour le robot : ${e.message}. Rien à faire.`);
       return;
     }
     throw e;
@@ -217,5 +220,5 @@ async function main() {
 
 main().catch((e) => {
   console.error("Le robot a échoué :", String(e?.message || e).slice(0, 200));
-  process.exit(1);
+  process.exitCode = 1;
 });
