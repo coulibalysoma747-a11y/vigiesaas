@@ -133,6 +133,7 @@ export default function MonitorDetail() {
           <button className="btn-ghost" disabled={!!busy} onClick={() => run("pause", async () => { await api(`/api/monitors/${id}`, { method: "PATCH", body: { isActive: paused } }); return paused ? "Surveillance reprise." : "Surveillance mise en pause : aucun contrôle, aucune alerte."; })}>
             {paused ? "Reprendre" : "Mettre en pause"}
           </button>
+          <Link href={`/tableau-de-bord/${id}/rapport`} className="btn-ghost">Rapport PDF</Link>
           <label className="flex items-center gap-2 text-label-md font-semibold text-text-muted">
             Contrôle toutes les
             <select
