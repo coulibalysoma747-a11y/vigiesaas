@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
-import { FieldValue, Timestamp } from "firebase-admin/firestore";
+import { FieldValue, Timestamp, type Firestore } from "firebase-admin/firestore";
 import { adminDb } from "@/lib/firebase-admin";
 import {
   MAX_FEATURES_PER_USER, MAX_ROBOTS_PER_USER, buildFeatureList, normalizeExpectText, normalizeInterval, normalizeMaxLatency, normalizeRobotConfig,
@@ -14,6 +14,23 @@ export const dynamic = "force-dynamic";
 type Ctx = { params: Promise<{ id: string }> };
 
 const newId = () => randomUUID().replace(/-/g, "").slice(0, 8);
+
+/** Le robot est coupé ou retiré : un incident encore ouvert est clos (il ne resterait « en cours » pour toujours), sans mail de retour puisque rien n'est revenu. */
+async function endRobotIncident(db: Firestore, incidentId: string | null | undefined) {
+  if (!incidentId) return;
+  const ref = db.collection("incidents").doc(incidentId);
+  const now = Timestamp.now();
+  const started = ((await ref.get()).data()?.startedAt as Timestamp | undefined)?.toMillis?.() ?? null;
+  await ref.update({ resolvedAt: now, durationSec: started === null ? null : Math.max(0, Math.round((now.toMillis() - started) / 1000)) }).catch(() => {});
+}
+
+/** Robot coupé : plus d'état « en panne » ni d'incident lié ; à la réactivation, le premier passage repart de zéro. */
+function resetRobotState(update: Record<string, unknown>) {
+  update["robot.enabled"] = false;
+  update["robot.ok"] = null;
+  update["robot.reason"] = null;
+  update["robot.incidentId"] = null;
+}
 
 /** Modifie un de SES sites : nom, pause / reprise, fréquence, contrôles avancés et fonctionnalités. Rien d'autre n'est modifiable. */
 export async function PATCH(req: Request, ctx: Ctx) {
@@ -72,9 +89,11 @@ export async function PATCH(req: Request, ctx: Ctx) {
     const vaultRef = db.collection("robotSecrets").doc(id);
     if (input.remove === true) {
       await vaultRef.delete().catch(() => {});
+      await endRobotIncident(db, mine.data.robot?.incidentId);
       update.robot = FieldValue.delete();
     } else if (input.enabled === false && input.email === undefined && input.password === undefined) {
-      update["robot.enabled"] = false;
+      await endRobotIncident(db, mine.data.robot?.incidentId);
+      resetRobotState(update);
     } else {
       const hasPassword = !!(await vaultRef.get()).data()?.passwordEnc;
       const parsed = normalizeRobotConfig(mine.data.url, input, hasPassword);
@@ -87,7 +106,11 @@ export async function PATCH(req: Request, ctx: Ctx) {
         if (!vaultReady()) return fail("Le coffre à mots de passe n'est pas encore configuré sur ce serveur (variable ROBOT_ENC_KEY).", 503);
         await vaultRef.set({ userId: caller.uid, passwordEnc: encryptSecret(parsed.password), updatedAt: Timestamp.now() });
       }
-      update["robot.enabled"] = parsed.config.enabled;
+      if (parsed.config.enabled) update["robot.enabled"] = true;
+      else {
+        await endRobotIncident(db, mine.data.robot?.incidentId);
+        resetRobotState(update);
+      }
       update["robot.loginPath"] = parsed.config.loginPath;
       update["robot.email"] = parsed.config.email;
       update["robot.hasPassword"] = hasPassword || !!parsed.password;
