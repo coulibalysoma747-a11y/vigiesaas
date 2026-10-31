@@ -46,13 +46,19 @@ export type RobotInfo = {
   email?: string;
   hasPassword?: boolean;
   lastRunAt?: Stamp;
+  runRequestedAt?: Stamp;
   ok?: boolean | null;
   reason?: string | null;
   loginOk?: boolean;
   pagesTested?: number;
   pagesFailed?: number;
   pagesBroken?: number;
-  pages?: { path: string; status: number | null; ms: number | null; error: string | null }[];
+  pagesWarned?: number;
+  pages?: { path: string; status: number | null; ms: number | null; error: string | null; warn?: string | null }[];
+  /** Scénario écrit par l'utilisateur (une ligne par geste) et résultat de chaque geste au dernier passage. */
+  scenarioText?: string;
+  stepResults?: { text: string; ok: boolean; error: string | null }[];
+  clicks?: number;
 };
 
 /** Une page découverte par l'exploration automatique. `up` vaut vrai aussi pour une page protégée (qui demande une connexion). */

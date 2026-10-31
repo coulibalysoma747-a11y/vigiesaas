@@ -1,8 +1,10 @@
 // Tests de la logique de surveillance : node --test scripts/test-monitoring.mts (Node 22.18 ou plus récent)
 import assert from "node:assert/strict";
 import test from "node:test";
+import * as robotRules from "../robot/rules.mjs";
 import { decryptSecret, encryptSecret, vaultReady } from "../src/lib/robot-crypto.ts";
 import {
+  ROBOT_FORBIDDEN, parseScenario, sanitizeSteps,
   effectiveInterval, reminderDue,
   normalizeRobotConfig, robotVerdict, sanitizeRobotReport,
   crawlDue, crawlLinks, crawlPath, fnv1a, mergeDiscovered, pageKey, pageStep, problemTotal,
@@ -379,27 +381,97 @@ test("robot : le rapport de l'exécuteur n'est jamais cru sur parole (types, tai
   assert.ok(r);
   if (r) {
     assert.equal(r.pages.length, 29); // 30 entrées lues au plus, dont une retirée (chemin invalide)
-    assert.deepEqual(r.pages[0], { path: "/app", status: 200, ms: 351, error: null });
-    assert.deepEqual(r.pages[1], { path: "/x /y", status: null, ms: null, error: "e".repeat(120) });
+    assert.deepEqual(r.pages[0], { path: "/app", status: 200, ms: 351, error: null, warn: null });
+    assert.deepEqual(r.pages[1], { path: "/x /y", status: null, ms: null, error: "e".repeat(120), warn: null });
+    assert.deepEqual(r.steps, []);
+    assert.equal(r.clicks, 0);
   }
+  const withSteps = sanitizeRobotReport({
+    loginOk: true, pages: [{ path: "/a", status: 200, warn: "w".repeat(300) }],
+    steps: [{ text: "aller à /a", ok: true }, { text: "voir « x »", ok: false, error: "introuvable" }, { text: "", ok: true }, { text: "sans ok" }, ...Array.from({ length: 40 }, () => ({ text: "t", ok: true }))],
+    clicks: 12.5,
+  });
+  assert.ok(withSteps);
+  if (withSteps) {
+    assert.equal(withSteps.pages[0].warn?.length, 120);
+    assert.equal(withSteps.steps.length, 20 - 2); // 20 lues au plus ; 2 invalides retirées
+    assert.deepEqual(withSteps.steps[1], { text: "voir « x »", ok: false, error: "introuvable" });
+    assert.equal(withSteps.clicks, 0); // pas un entier : refusé
+  }
+  assert.equal(sanitizeRobotReport({ loginOk: true, pages: [], clicks: 9999 })?.clicks, 500);
 });
 
 test("robot : verdict — connexion impossible, page en erreur, lien cassé (404) sans panne", () => {
-  const page = (path: string, status: number | null, error: string | null = null) => ({ path, status, ms: 100, error });
-  assert.deepEqual(robotVerdict({ loginOk: true, loginError: null, pages: [page("/app", 200), page("/app/paiements", 200)] }), { ok: true, reason: null, failed: [], broken: [] });
-  const noLogin = robotVerdict({ loginOk: false, loginError: "Connexion refusée : « Mot de passe incorrect »", pages: [] });
+  const page = (path: string, status: number | null, error: string | null = null) => ({ path, status, ms: 100, error, warn: null });
+  const base = { loginOk: true, loginError: null, steps: [], clicks: 0 };
+  assert.deepEqual(robotVerdict({ ...base, pages: [page("/app", 200), page("/app/paiements", 200)] }), { ok: true, reason: null, failed: [], broken: [], failedSteps: [] });
+  const noLogin = robotVerdict({ ...base, loginOk: false, loginError: "Connexion refusée : « Mot de passe incorrect »", pages: [] });
   assert.equal(noLogin.ok, false);
   assert.equal(noLogin.reason, "Connexion impossible : Connexion refusée : « Mot de passe incorrect »");
-  assert.match(robotVerdict({ loginOk: false, loginError: null, pages: [] }).reason ?? "", /n'a pas pu se connecter/);
-  const err = robotVerdict({ loginOk: true, loginError: null, pages: [page("/app", 200), page("/app/retraits", 500), page("/app/factures", null, "Délai dépassé"), page("/app/ancien", 404)] });
+  assert.match(robotVerdict({ ...base, loginOk: false, pages: [] }).reason ?? "", /n'a pas pu se connecter/);
+  const err = robotVerdict({ ...base, pages: [page("/app", 200), page("/app/retraits", 500), page("/app/factures", null, "Délai dépassé"), page("/app/ancien", 404)] });
   assert.equal(err.ok, false);
   assert.equal(err.reason, "2 pages de l'application en erreur : /app/retraits (HTTP 500), /app/factures (Délai dépassé)");
   assert.deepEqual(err.broken.map((p) => p.path), ["/app/ancien"]);
-  const onlyBroken = robotVerdict({ loginOk: true, loginError: null, pages: [page("/app", 200), page("/app/ancien", 404)] });
+  const onlyBroken = robotVerdict({ ...base, pages: [page("/app", 200), page("/app/ancien", 404)] });
   assert.equal(onlyBroken.ok, true); // un 404 n'est pas une panne
   assert.equal(onlyBroken.broken.length, 1);
-  const many = robotVerdict({ loginOk: true, loginError: null, pages: ["/a", "/b", "/c", "/d", "/e"].map((p) => page(p, 503)) });
+  const many = robotVerdict({ ...base, pages: ["/a", "/b", "/c", "/d", "/e"].map((p) => page(p, 503)) });
   assert.match(many.reason ?? "", /5 pages .* et 2 autres$/);
+  // Une remarque (erreur JavaScript) n'est jamais une panne ; un geste de scénario en échec en est une.
+  const warned = robotVerdict({ ...base, pages: [{ ...page("/app", 200), warn: "Erreur JavaScript : x" }] });
+  assert.equal(warned.ok, true);
+  const stepFail = robotVerdict({ ...base, pages: [page("/app", 200)], steps: [{ text: "aller à /app", ok: true, error: null }, { text: "voir « Lien créé »", ok: false, error: "introuvable (délai dépassé)" }] });
+  assert.equal(stepFail.ok, false);
+  assert.equal(stepFail.reason, "scénario en échec à « voir « Lien créé » » (introuvable (délai dépassé))");
+  const both = robotVerdict({ ...base, pages: [page("/app/x", 500)], steps: [{ text: "cliquer sur « Go »", ok: false, error: null }] });
+  assert.match(both.reason ?? "", /1 page de l'application en erreur : \/app\/x \(HTTP 500\) ; scénario en échec à « cliquer sur « Go » »$/);
+});
+
+test("scénario : lecture des gestes, erreurs claires, aucun geste dangereux", () => {
+  const url = "https://exemple.com";
+  const ok = parseScenario(url, "# commentaire\n\naller à /paiements\ncliquer sur « Créer un lien »\nremplir Montant avec 1000\nvoir Lien créé\nattendre 2\nVa sur /app/retraits");
+  assert.equal(ok.ok, true);
+  if (ok.ok) {
+    assert.deepEqual(ok.steps, [
+      { a: "goto", t: "/paiements" }, { a: "click", t: "Créer un lien" }, { a: "fill", t: "Montant", v: "1000" },
+      { a: "see", t: "Lien créé" }, { a: "wait", t: "2" }, { a: "goto", t: "/app/retraits" },
+    ]);
+    assert.equal(ok.lines.length, 6);
+  }
+  assert.deepEqual(parseScenario(url, ""), { ok: true, steps: [], lines: [] });
+  const bad = (text: string) => { const r = parseScenario(url, text); return r.ok ? "OK" : r.error; };
+  assert.match(bad("voir ok\nfaire un truc"), /^Ligne 2 : geste non compris/);
+  assert.match(bad("aller à https://autre.com/x"), /^Ligne 1 : .*pas une page de ton site/);
+  assert.match(bad("attendre 30"), /entre 1 et 5 secondes/);
+  assert.match(bad("cliquer sur Supprimer mon compte"), /action que le robot n'a pas le droit de faire/);
+  assert.match(bad("cliquer sur Retirer l'argent"), /pas le droit/);
+  assert.match(bad("cliquer sur Se déconnecter"), /pas le droit/);
+  assert.match(bad("cliquer sur Payer maintenant"), /pas le droit/);
+  assert.match(bad("remplir Mot de passe avec abc"), /sensible/);
+  assert.match(bad("remplir Numéro de carte avec 4242"), /sensible/);
+  assert.match(bad("remplir Montant avec"), /geste non compris|manque/);
+  assert.match(bad(Array.from({ length: 21 }, () => "attendre 1").join("\n")), /20 gestes au plus/);
+  assert.match(bad("x".repeat(5000)), /trop long/);
+  // Prudence maximale : tout bouton qui parle de retrait est refusé, même un simple lien de menu (pour voir cette page : « aller à /retraits »).
+  assert.match(bad("cliquer sur Historique des retraits"), /pas le droit/);
+  assert.equal(bad("aller à /retraits"), "OK");
+  assert.equal(bad("cliquer sur Paiements"), "OK"); // un nom de menu n'est pas l'action de payer
+});
+
+test("scénario : relu depuis la base, un geste dangereux ou mal formé est écarté", () => {
+  const steps = sanitizeSteps([
+    { a: "goto", t: "/app" }, { a: "click", t: "Supprimer" }, { a: "fill", t: "Mot de passe", v: "x" }, { a: "fill", t: "Montant", v: "5" },
+    { a: "danse", t: "x" }, { a: "see", t: "" }, null, 12, { a: "click", t: "Créer un lien" },
+  ]);
+  assert.deepEqual(steps, [{ a: "goto", t: "/app" }, { a: "fill", t: "Montant", v: "5" }, { a: "click", t: "Créer un lien" }]);
+  assert.deepEqual(sanitizeSteps("pas un tableau"), []);
+});
+
+test("robot : les règles de sécurité de l'exécuteur sont identiques à celles du serveur", () => {
+  assert.equal(robotRules.FORBIDDEN.source, ROBOT_FORBIDDEN.source);
+  assert.equal(robotRules.FORBIDDEN.flags, ROBOT_FORBIDDEN.flags);
+  assert.ok(robotRules.SECRET_FIELD.test("Mot de passe"));
 });
 
 test("coffre : chiffrement AES-256-GCM, rien d'illisible modifiable, inutilisable sans la bonne clé", () => {

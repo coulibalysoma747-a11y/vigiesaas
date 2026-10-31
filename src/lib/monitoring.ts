@@ -516,7 +516,93 @@ export const MAX_ROBOTS_PER_USER = 3;
 /** Un scénario confié à un exécuteur n'est pas redonné à un autre pendant ce délai. */
 export const ROBOT_LEASE_MIN = 4;
 
-export type RobotConfigInput = { enabled?: unknown; loginPath?: unknown; email?: unknown; password?: unknown };
+export type RobotConfigInput = { enabled?: unknown; loginPath?: unknown; email?: unknown; password?: unknown; scenario?: unknown };
+
+// ───── Scénario : les gestes que le robot fait comme un testeur (écrits en français, une ligne par geste) ─────
+
+export const ROBOT_MAX_STEPS = 20;
+export type RobotStep = { a: "goto" | "click" | "fill" | "see" | "wait"; t: string; v?: string };
+
+/**
+ * Actions irréversibles ou financières : le robot ne clique JAMAIS dessus, ni dans un scénario, ni en exploration
+ * (supprimer, payer, retirer de l'argent, virement, se déconnecter…). L'exécuteur applique la même règle au texte réel du bouton.
+ */
+export const ROBOT_FORBIDDEN = /supprim|delet|remov|effac|retirer|retrait|withdraw|\bpayer\b|pay now|virement|transf[eé]r|envoyer (l'|de l'|un |le |des )?(argent|paiement|virement|fonds)|confirmer|r[eé]silier|annuler|d[eé]connect|d[eé]connex|quitter|fermer la session|log ?out|sign ?out|d[eé]sactiver|r[eé]initialiser|\breset\b/i;
+/** Champs où un scénario n'a pas le droit de saisir une valeur (elle serait lisible dans le navigateur). */
+const ROBOT_SECRET_FIELD = /mot de passe|password|\bpin\b|cvv|iban|secret|carte|\botp\b|code de v[eé]rification|code sms/i;
+
+const unquote = (s: string) => s.trim().replace(/^["'«“]\s*|\s*["'»”]$/g, "").trim();
+
+/**
+ * Transforme le texte d'un scénario en gestes. Exemple :
+ *   aller à /paiements
+ *   cliquer sur Créer un lien
+ *   remplir Montant avec 1000
+ *   voir Lien créé
+ *   attendre 2
+ * Les lignes vides et celles qui commencent par # sont ignorées. Renvoie l'erreur de la première ligne invalide.
+ */
+export function parseScenario(baseUrl: string, text: unknown): { ok: true; steps: RobotStep[]; lines: string[] } | { ok: false; error: string } {
+  const raw = typeof text === "string" ? text : "";
+  if (raw.length > 4000) return { ok: false, error: "Scénario trop long." };
+  const steps: RobotStep[] = [];
+  const lines: string[] = [];
+  const rows = raw.split(/\r?\n/);
+  for (let i = 0; i < rows.length; i++) {
+    const line = rows[i].replace(/[\u0000-\u001f\u007f]+/g, " ").trim();
+    if (!line || line.startsWith("#")) continue;
+    const fail = (why: string) => ({ ok: false as const, error: `Ligne ${i + 1} : ${why}` });
+    if (steps.length >= ROBOT_MAX_STEPS) return fail(`${ROBOT_MAX_STEPS} gestes au plus.`);
+    let m: RegExpMatchArray | null;
+    if ((m = line.match(/^(?:aller|va|ouvrir|visiter)\s+(?:à|a|sur)?\s*(\S+)$/i))) {
+      const target = featureUrl(baseUrl, m[1]);
+      if (!target.ok) return fail(`« ${m[1]} » n'est pas une page de ton site (${target.error}).`);
+      steps.push({ a: "goto", t: target.path });
+    } else if ((m = line.match(/^cliquer\s+sur\s+(.+)$/i))) {
+      const t = unquote(m[1]).slice(0, 80);
+      if (!t) return fail("sur quoi cliquer ?");
+      if (ROBOT_FORBIDDEN.test(t)) return fail(`« ${t} » est une action que le robot n'a pas le droit de faire (supprimer, payer, retirer de l'argent, se déconnecter…).`);
+      steps.push({ a: "click", t });
+    } else if ((m = line.match(/^(?:remplir|saisir)\s+(.+?)\s+avec\s+(.+)$/i))) {
+      const t = unquote(m[1]).slice(0, 80);
+      const v = unquote(m[2]).slice(0, 100);
+      if (!t || !v) return fail("il manque le champ ou la valeur.");
+      if (ROBOT_SECRET_FIELD.test(t)) return fail(`le champ « ${t} » est sensible : le robot n'y saisit jamais de valeur.`);
+      steps.push({ a: "fill", t, v });
+    } else if ((m = line.match(/^(?:voir|v[eé]rifier)\s+(.+)$/i))) {
+      const t = unquote(m[1]).slice(0, 100);
+      if (!t) return fail("quel texte doit apparaître ?");
+      steps.push({ a: "see", t });
+    } else if ((m = line.match(/^attendre\s+(\d{1,2})\s*(?:s|sec|secondes?)?$/i))) {
+      const seconds = Number(m[1]);
+      if (seconds < 1 || seconds > 5) return fail("attendre entre 1 et 5 secondes.");
+      steps.push({ a: "wait", t: String(seconds) });
+    } else {
+      return fail("geste non compris. Utilise : aller à /page · cliquer sur Texte · remplir Champ avec Valeur · voir Texte · attendre 2");
+    }
+    lines.push(line.slice(0, 160));
+  }
+  return { ok: true, steps, lines };
+}
+
+/** Un geste de scénario enregistré, relu depuis la base : on ne s'y fie pas (forme, tailles, actions interdites). */
+export function sanitizeSteps(raw: unknown): RobotStep[] {
+  const out: RobotStep[] = [];
+  for (const entry of Array.isArray(raw) ? raw.slice(0, ROBOT_MAX_STEPS) : []) {
+    const s = (entry ?? {}) as Record<string, unknown>;
+    const a = s.a;
+    if (a !== "goto" && a !== "click" && a !== "fill" && a !== "see" && a !== "wait") continue;
+    const t = typeof s.t === "string" ? s.t.slice(0, 100) : "";
+    if (!t) continue;
+    if (a === "click" && ROBOT_FORBIDDEN.test(t)) continue;
+    if (a === "fill") {
+      const v = typeof s.v === "string" ? s.v.slice(0, 100) : "";
+      if (!v || ROBOT_SECRET_FIELD.test(t)) continue;
+      out.push({ a, t, v });
+    } else out.push({ a, t });
+  }
+  return out;
+}
 
 /** Réglages du robot saisis par l'utilisateur. Le mot de passe n'est jamais dans la configuration : il part dans le coffre chiffré. */
 export function normalizeRobotConfig(
@@ -535,8 +621,10 @@ export function normalizeRobotConfig(
   return { ok: true, config: { enabled, loginPath: login.path, email }, password: raw || null };
 }
 
-export type RobotPageResult = { path: string; status: number | null; ms: number | null; error: string | null };
-export type RobotReport = { loginOk: boolean; loginError: string | null; pages: RobotPageResult[] };
+/** `error` = panne (alerte) ; `warn` = simple remarque, jamais d'alerte (par exemple une erreur JavaScript dans la page). */
+export type RobotPageResult = { path: string; status: number | null; ms: number | null; error: string | null; warn: string | null };
+export type RobotStepResult = { text: string; ok: boolean; error: string | null };
+export type RobotReport = { loginOk: boolean; loginError: string | null; pages: RobotPageResult[]; steps: RobotStepResult[]; clicks: number };
 
 const cleanText = (value: unknown, max: number): string | null => {
   if (typeof value !== "string") return null;
@@ -556,23 +644,37 @@ export function sanitizeRobotReport(raw: unknown): RobotReport | null {
     if (!path || !path.startsWith("/")) continue;
     const status = typeof p.status === "number" && Number.isInteger(p.status) && p.status >= 100 && p.status <= 599 ? p.status : null;
     const ms = typeof p.ms === "number" && Number.isFinite(p.ms) && p.ms >= 0 && p.ms <= 120_000 ? Math.round(p.ms) : null;
-    pages.push({ path, status, ms, error: cleanText(p.error, 120) });
+    pages.push({ path, status, ms, error: cleanText(p.error, 120), warn: cleanText(p.warn, 120) });
   }
-  return { loginOk: r.loginOk, loginError: cleanText(r.loginError, 200), pages };
+  const steps: RobotStepResult[] = [];
+  for (const entry of Array.isArray(r.steps) ? r.steps.slice(0, ROBOT_MAX_STEPS) : []) {
+    const s = (entry ?? {}) as Record<string, unknown>;
+    const text = cleanText(s.text, 140);
+    if (!text || typeof s.ok !== "boolean") continue;
+    steps.push({ text, ok: s.ok, error: cleanText(s.error, 120) });
+  }
+  const clicks = typeof r.clicks === "number" && Number.isInteger(r.clicks) && r.clicks >= 0 ? Math.min(r.clicks, 500) : 0;
+  return { loginOk: r.loginOk, loginError: cleanText(r.loginError, 200), pages, steps, clicks };
 }
 
 /**
  * Verdict d'un passage du robot. Panne : le compte de test n'arrive pas à se connecter, ou une page de l'application répond en erreur
  * (500 et plus, délai dépassé, session perdue, page d'erreur affichée). Une page 404 est un « lien cassé » : signalé, mais ce n'est pas une panne.
  */
-export function robotVerdict(report: RobotReport): { ok: boolean; reason: string | null; failed: RobotPageResult[]; broken: RobotPageResult[] } {
-  if (!report.loginOk) return { ok: false, reason: `Connexion impossible : ${report.loginError ?? "le compte de test n'a pas pu se connecter"}`, failed: [], broken: [] };
+export function robotVerdict(report: RobotReport): { ok: boolean; reason: string | null; failed: RobotPageResult[]; broken: RobotPageResult[]; failedSteps: RobotStepResult[] } {
+  if (!report.loginOk) return { ok: false, reason: `Connexion impossible : ${report.loginError ?? "le compte de test n'a pas pu se connecter"}`, failed: [], broken: [], failedSteps: [] };
   const failed = report.pages.filter((p) => p.error !== null || p.status === null || p.status >= 500);
   const broken = report.pages.filter((p) => !failed.includes(p) && (p.status === 404 || p.status === 410));
-  if (!failed.length) return { ok: true, reason: null, failed, broken };
-  const shown = failed.slice(0, 3).map((p) => `${p.path} (${p.error ?? `HTTP ${p.status}`})`).join(", ");
-  const more = failed.length > 3 ? ` et ${failed.length - 3} autre${failed.length - 3 > 1 ? "s" : ""}` : "";
-  return { ok: false, reason: `${failed.length} page${failed.length > 1 ? "s" : ""} de l'application en erreur : ${shown}${more}`, failed, broken };
+  const failedSteps = report.steps.filter((s) => !s.ok);
+  if (!failed.length && !failedSteps.length) return { ok: true, reason: null, failed, broken, failedSteps };
+  const parts: string[] = [];
+  if (failed.length) {
+    const shown = failed.slice(0, 3).map((p) => `${p.path} (${p.error ?? `HTTP ${p.status}`})`).join(", ");
+    const more = failed.length > 3 ? ` et ${failed.length - 3} autre${failed.length - 3 > 1 ? "s" : ""}` : "";
+    parts.push(`${failed.length} page${failed.length > 1 ? "s" : ""} de l'application en erreur : ${shown}${more}`);
+  }
+  if (failedSteps.length) parts.push(`scénario en échec à « ${failedSteps[0].text} »${failedSteps[0].error ? ` (${failedSteps[0].error})` : ""}`);
+  return { ok: false, reason: parts.join(" ; "), failed, broken, failedSteps };
 }
 
 /** « https://www.exemple.com/page » devient « exemple.com ». */

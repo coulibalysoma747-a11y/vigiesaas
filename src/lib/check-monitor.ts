@@ -54,6 +54,8 @@ export type RobotState = {
   hasPassword?: boolean;
   lastRunAt?: Timestamp | null;
   leaseUntil?: Timestamp | null;
+  /** Demande « Lancer le robot maintenant » : prise en compte au prochain passage, puis effacée. */
+  runRequestedAt?: Timestamp | null;
   ok?: boolean | null;
   incidentId?: string | null;
   changedAt?: Timestamp | null;

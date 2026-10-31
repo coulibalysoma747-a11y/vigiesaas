@@ -19,13 +19,17 @@ export async function applyRobotReport(
   const update: Record<string, unknown> = {
     "robot.lastRunAt": at,
     "robot.leaseUntil": null,
+    "robot.runRequestedAt": null,
     "robot.ok": verdict.ok,
     "robot.reason": verdict.reason,
     "robot.loginOk": report.loginOk,
     "robot.pagesTested": report.pages.length,
     "robot.pagesFailed": verdict.failed.length,
     "robot.pagesBroken": verdict.broken.length,
+    "robot.pagesWarned": report.pages.filter((p) => p.warn !== null).length,
     "robot.pages": report.pages.slice(0, 20),
+    "robot.stepResults": report.steps,
+    "robot.clicks": report.clicks,
   };
 
   let notice: { kind: AlertKind; downSeconds?: number | null } | null = null;

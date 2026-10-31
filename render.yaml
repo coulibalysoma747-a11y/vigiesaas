@@ -37,6 +37,9 @@ services:
         sync: false
       - key: ROBOT_ENC_KEY
         sync: false
+      # Facultatif : jeton GitHub (Actions : Read and write sur ce dépôt) pour le bouton « Lancer le robot maintenant ». Sans lui, la demande attend le prochain déclencheur.
+      - key: GITHUB_DISPATCH_TOKEN
+        sync: false
       # Facultatif : expéditeur des alertes une fois ton domaine vérifié chez Resend, ex. "Vigie SaaS <alertes@ton-domaine.com>".
       - key: ALERT_FROM
         sync: false

@@ -1,16 +1,21 @@
-// Robot de connexion de Vigie SaaS : un vrai navigateur (Chromium) se connecte avec un COMPTE DE TEST et visite l'intérieur de l'application.
+// Robot de connexion de Vigie SaaS : un vrai navigateur (Chromium) se connecte avec un COMPTE DE TEST et agit comme un testeur.
 // Lancé par GitHub Actions (.github/workflows/robot.yml). Règles de sécurité :
-//  - il ne clique JAMAIS sur un bouton (sauf « se connecter ») et ne se déconnecte jamais : il navigue seulement ;
+//  - il ouvre seulement des onglets, menus et volets ; il ne clique JAMAIS sur ce qui supprime, paie, retire de l'argent ou déconnecte (rules.mjs) ;
+//  - les gestes d'un scénario (aller à, cliquer sur, remplir, voir) sont vérifiés une seconde fois sur le texte réel du bouton ;
 //  - il ne tape les identifiants QUE sur le site surveillé, et refuse toute adresse privée ou interne ;
 //  - aucun mot de passe n'est jamais écrit dans les journaux (le dépôt est public : les journaux le sont aussi).
 import dns from "node:dns/promises";
 import { chromium } from "playwright-core";
+import { FORBIDDEN, SECRET_FIELD } from "./rules.mjs";
 
 const APP_URL = (process.env.APP_URL || "").replace(/\/$/, "");
 const SECRET = process.env.ROBOT_SECRET || "";
 const ALLOW_PRIVATE = process.env.ROBOT_ALLOW_PRIVATE === "1"; // pour les essais sur cet ordinateur UNIQUEMENT
 const USER_AGENT = "VigieSaaS-Robot/1.0 (surveillance de disponibilite)";
 const RUN_BUDGET_MS = 4 * 60_000;
+const JOB_BUDGET_MS = 100_000;
+const MAX_CLICKS_PER_PAGE = 5;
+const CLICKABLE = 'button, a, [role="button"], [role="tab"], [role="menuitem"], summary, label';
 
 const ASSET = /\.(png|jpe?g|gif|svg|webp|ico|css|js|mjs|json|xml|pdf|zip|mp4|mp3|woff2?|ttf|map|txt)$/i;
 const LOGOUT = /(logout|log-out|signout|sign-out|deconnexion|deconnecter|d%C3%A9connexion|sortir|quitter)/i;
@@ -88,32 +93,141 @@ async function api(path, init = {}) {
   throw error;
 }
 
-async function visit(page, base, loginPath, path) {
+const isLoginPage = (page, loginPath) => (new URL(page.url()).pathname.replace(/\/$/, "") || "/") === loginPath;
+
+/** Étiquette visible d'un élément (texte + aria-label) : sert à refuser les boutons dangereux, quoi qu'il arrive. */
+async function labelOf(el) {
+  const text = await el.innerText({ timeout: 1500 }).catch(() => "");
+  const aria = await el.getAttribute("aria-label").catch(() => null);
+  return `${text} ${aria ?? ""}`.replace(/\s+/g, " ").trim();
+}
+
+/** Exploration SÛRE d'une page : ouvre onglets, volets et menus (jamais un bouton d'envoi de formulaire ni une action interdite). */
+async function exploreSafe(page, run) {
+  const startUrl = page.url();
+  const toggles = page.locator('[role="tab"]:visible, button[aria-expanded="false"]:visible, summary:visible');
+  const count = Math.min(await toggles.count().catch(() => 0), MAX_CLICKS_PER_PAGE);
+  let clicks = 0;
+  for (let i = 0; i < count && Date.now() < run.deadline; i++) {
+    const el = toggles.nth(i);
+    const label = await labelOf(el);
+    if (FORBIDDEN.test(label)) continue;
+    const submits = await el.evaluate((n) => n.tagName === "BUTTON" && n.type === "submit" && !!n.form).catch(() => true);
+    if (submits) continue;
+    try {
+      await el.click({ timeout: 3000 });
+      clicks++;
+      await page.waitForTimeout(300);
+    } catch {
+      /* élément disparu ou masqué : on passe au suivant */
+    }
+  }
+  if (page.url() !== startUrl) await page.goto(startUrl, { waitUntil: "domcontentloaded", timeout: 15_000 }).catch(() => {});
+  return clicks;
+}
+
+async function visit(page, base, loginPath, path, watch, run) {
   const started = Date.now();
-  const result = { path, status: null, ms: null, error: null };
+  const result = { path, status: null, ms: null, error: null, warn: null };
+  watch.errors.length = 0;
+  watch.warns.length = 0;
   try {
     const response = await page.goto(new URL(path, base).href, { waitUntil: "domcontentloaded", timeout: 20_000 });
     result.status = response ? response.status() : null;
     await page.waitForTimeout(600);
     result.ms = Date.now() - started;
-    if ((new URL(page.url()).pathname.replace(/\/$/, "") || "/") === loginPath) {
+    if (isLoginPage(page, loginPath)) {
       result.error = "Redirigé vers la connexion (session perdue)";
     } else if (result.status !== null && result.status < 400) {
       const text = (await page.locator("body").innerText({ timeout: 3000 }).catch(() => "")) || "";
       if (text.length < 3000 && ERROR_TEXT.test(text)) result.error = "Page d'erreur affichée";
+      else run.clicks += await exploreSafe(page, run);
     }
   } catch (e) {
     result.ms = Date.now() - started;
     result.error = /timeout/i.test(String(e?.message || e)) ? "Délai dépassé" : "Page inaccessible";
   }
+  if (!result.error && watch.errors.length) result.error = `${watch.errors[0]}${watch.errors.length > 1 ? ` (+${watch.errors.length - 1})` : ""}`.slice(0, 120);
+  if (watch.warns.length) result.warn = watch.warns[0];
   return result;
 }
 
+const describe = (s) =>
+  s.a === "goto" ? `aller à ${s.t}` : s.a === "click" ? `cliquer sur « ${s.t} »` : s.a === "fill" ? `remplir « ${s.t} »` : s.a === "see" ? `voir « ${s.t} »` : `attendre ${s.t} s`;
+
+/** Un geste du scénario. Renvoie null s'il réussit, sinon la raison (courte) de l'échec. */
+async function doStep(page, base, loginPath, step) {
+  if (step.a === "goto") {
+    const res = await page.goto(new URL(step.t, base).href, { waitUntil: "domcontentloaded", timeout: 20_000 });
+    await page.waitForTimeout(500);
+    if (isLoginPage(page, loginPath)) return "redirigé vers la connexion (session perdue)";
+    return res && res.status() >= 400 ? `HTTP ${res.status()}` : null;
+  }
+  if (step.a === "wait") {
+    await page.waitForTimeout(Math.min(5, Math.max(1, Number(step.t) || 1)) * 1000);
+    return null;
+  }
+  if (step.a === "see") {
+    await page.getByText(step.t, { exact: false }).first().waitFor({ state: "visible", timeout: 8000 });
+    return null;
+  }
+  if (step.a === "fill") {
+    if (SECRET_FIELD.test(step.t)) return "champ sensible refusé";
+    const byLabel = page.getByLabel(step.t, { exact: false }).first();
+    const found = await byLabel.waitFor({ state: "visible", timeout: 4000 }).then(() => true, () => false);
+    const field = found ? byLabel : page.getByPlaceholder(step.t, { exact: false }).first();
+    await field.waitFor({ state: "visible", timeout: 4000 });
+    if ((await field.getAttribute("type")) === "password") return "champ mot de passe refusé";
+    await field.fill(step.v ?? "");
+    return null;
+  }
+  // click
+  const el = page.locator(CLICKABLE).filter({ hasText: step.t }).first();
+  await el.waitFor({ state: "visible", timeout: 8000 });
+  if (FORBIDDEN.test(await labelOf(el))) return "bouton interdit au robot (action irréversible)";
+  const href = await el.getAttribute("href").catch(() => null);
+  if (href) {
+    try {
+      if (new URL(href, page.url()).origin !== base.origin) return "lien vers un autre site refusé";
+    } catch {
+      return "lien invalide";
+    }
+  }
+  await el.click({ timeout: 5000 });
+  await page.waitForTimeout(600);
+  return null;
+}
+
+/** Exécute le scénario ; s'arrête au premier geste en échec (les suivants n'auraient pas de sens). */
+async function runSteps(page, base, loginPath, steps, watch, run) {
+  const results = [];
+  for (const step of steps) {
+    const text = describe(step);
+    if (Date.now() > run.deadline) {
+      results.push({ text, ok: false, error: "temps imparti dépassé" });
+      break;
+    }
+    watch.errors.length = 0;
+    let error = null;
+    try {
+      error = await doStep(page, base, loginPath, step);
+    } catch (e) {
+      error = /timeout/i.test(String(e?.message || e)) ? "introuvable (délai dépassé)" : String(e?.message || e).split("\n")[0].slice(0, 100);
+    }
+    if (!error && watch.errors.length) error = watch.errors[0];
+    results.push({ text, ok: error === null, error });
+    if (error) break;
+  }
+  return results;
+}
+
 async function runJob(browser, job) {
-  const report = { loginOk: false, loginError: null, pages: [] };
+  const report = { loginOk: false, loginError: null, pages: [], steps: [], clicks: 0 };
   const base = new URL(job.baseUrl);
   const wanted = String(job.loginPath || "/connexion");
   const loginPath = wanted === "/" ? "/" : (pagePath(wanted, base) ?? "/connexion");
+  const run = { clicks: 0, deadline: Date.now() + JOB_BUDGET_MS };
+  const watch = { errors: [], warns: [] };
   const context = await browser.newContext({ userAgent: USER_AGENT, viewport: { width: 1280, height: 800 } });
   try {
     await assertPublicHost(base.hostname);
@@ -130,6 +244,20 @@ async function runJob(browser, job) {
     });
     const page = await context.newPage();
     page.setDefaultTimeout(20_000);
+    page.on("dialog", (d) => d.dismiss().catch(() => {})); // jamais de « OK » sur une boîte de confirmation
+    // Comme un testeur qui ouvre la console : appels d'API en erreur (panne) et erreurs JavaScript (simple remarque).
+    page.on("response", (res) => {
+      try {
+        const type = res.request().resourceType();
+        const url = new URL(res.url());
+        if ((type === "xhr" || type === "fetch") && url.origin === base.origin && res.status() >= 500) {
+          watch.errors.push(`${res.request().method()} ${url.pathname.slice(0, 50)} répond ${res.status()}`);
+        }
+      } catch {
+        /* ignoré */
+      }
+    });
+    page.on("pageerror", (e) => watch.warns.push(`Erreur JavaScript : ${String(e?.message || e).split("\n")[0].slice(0, 80)}`));
 
     // 1. Page de connexion
     await page.goto(new URL(loginPath, base).href, { waitUntil: "domcontentloaded", timeout: 25_000 });
@@ -158,7 +286,7 @@ async function runJob(browser, job) {
     }
     await page.waitForLoadState("networkidle", { timeout: 6000 }).catch(() => {});
 
-    // 3. L'intérieur : page d'arrivée, puis les liens du même site qu'elle contient (sans jamais se déconnecter ni cliquer)
+    // 3. L'intérieur : page d'arrivée, puis les liens du même site qu'elle contient (sans jamais se déconnecter)
     const landing = pagePath(page.url(), base) ?? "/";
     const links = await page.$$eval("a[href]", (anchors) => anchors.map((a) => ({ href: a.href, text: (a.textContent || "").trim().slice(0, 60) }))).catch(() => []);
     const queue = [landing];
@@ -168,11 +296,21 @@ async function runJob(browser, job) {
       queue.push(path);
       if (queue.length >= (job.maxPages || 15)) break;
     }
-    for (const path of queue) report.pages.push(await visit(page, base, loginPath, path));
+    for (const path of queue) {
+      if (Date.now() > run.deadline) break;
+      report.pages.push(await visit(page, base, loginPath, path, watch, run));
+    }
+
+    // 4. Le scénario de l'utilisateur (aller à, cliquer sur, remplir, voir), depuis la page d'arrivée
+    if (Array.isArray(job.steps) && job.steps.length) {
+      await page.goto(new URL(landing, base).href, { waitUntil: "domcontentloaded", timeout: 20_000 }).catch(() => {});
+      report.steps = await runSteps(page, base, loginPath, job.steps, watch, run);
+    }
   } catch (e) {
     if (!report.loginOk) report.loginError = String(e?.message || e).slice(0, 160);
-    else report.pages.push({ path: "/", status: null, ms: null, error: String(e?.message || e).slice(0, 100) });
+    else report.pages.push({ path: "/", status: null, ms: null, error: String(e?.message || e).slice(0, 100), warn: null });
   } finally {
+    report.clicks = run.clicks;
     await context.close().catch(() => {});
   }
   return report;
@@ -210,7 +348,11 @@ async function main() {
       }
       const report = await runJob(browser, job);
       const failed = report.pages.filter((p) => p.error || p.status === null || p.status >= 500).length;
-      console.log(`${hostOf(job.baseUrl)} : connexion ${report.loginOk ? "réussie" : "ÉCHEC"}, ${report.pages.length} page(s) visitée(s), ${failed} en erreur`);
+      const stepsOk = report.steps.filter((s) => s.ok).length;
+      console.log(
+        `${hostOf(job.baseUrl)} : connexion ${report.loginOk ? "réussie" : "ÉCHEC"}, ${report.pages.length} page(s) visitée(s), ${failed} en erreur, ${report.clicks} clic(s) d'exploration` +
+          (report.steps.length ? `, scénario ${stepsOk}/${report.steps.length} geste(s) réussi(s)` : ""),
+      );
       await api("/api/robot/report", { method: "POST", body: JSON.stringify({ monitorId: job.monitorId, ...report }) });
     }
   } finally {

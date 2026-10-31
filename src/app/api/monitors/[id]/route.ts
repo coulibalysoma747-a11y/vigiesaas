@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { FieldValue, Timestamp, type Firestore } from "firebase-admin/firestore";
 import { adminDb } from "@/lib/firebase-admin";
 import {
-  MAX_FEATURES_PER_USER, MAX_ROBOTS_PER_USER, MAX_VIGILANCE_PER_USER, buildFeatureList, normalizeExpectText, normalizeInterval, normalizeMaxLatency, normalizeRobotConfig,
+  MAX_FEATURES_PER_USER, MAX_ROBOTS_PER_USER, MAX_VIGILANCE_PER_USER, buildFeatureList, normalizeExpectText, normalizeInterval, normalizeMaxLatency, normalizeRobotConfig, parseScenario,
   type RobotConfigInput,
 } from "@/lib/monitoring";
 import { encryptSecret, vaultReady } from "@/lib/robot-crypto";
@@ -118,6 +118,12 @@ export async function PATCH(req: Request, ctx: Ctx) {
       else {
         await endRobotIncident(db, mine.data.robot?.incidentId);
         resetRobotState(update);
+      }
+      if (input.scenario !== undefined) {
+        const scenario = parseScenario(mine.data.url, input.scenario);
+        if (!scenario.ok) return fail(scenario.error, 400);
+        update["robot.scenarioText"] = scenario.lines.join("\n");
+        update["robot.steps"] = scenario.steps;
       }
       update["robot.loginPath"] = parsed.config.loginPath;
       update["robot.email"] = parsed.config.email;
